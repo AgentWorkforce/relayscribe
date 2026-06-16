@@ -1,0 +1,14 @@
+{
+  "$schema": "../branding.schema.json",
+  "id": "agent-relay",
+  "productName": "Agent Relay",
+  "shortName": "Agent Relay",
+  "appId": "com.agentrelay.recorder",
+  "supportUrl": "https://agentrelay.com",
+  "icon": "../assets/agent-relay/icon.svg",
+  "consent": {
+    "microphone": "Agent Relay captures meeting and brainstorm audio locally on your Mac. No bot joins the call.",
+    "screenCapture": "Agent Relay needs screen recording access to detect active meeting windows.",
+    "appleEvents": "Agent Relay uses Apple Events to identify active meeting windows."
+  }
+}

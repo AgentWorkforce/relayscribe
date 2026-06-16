@@ -8,7 +8,7 @@ recorder logic or the sidecar. Everything lives in one config file plus one icon
 
 ```bash
 # 1. Add a brand config + icon
-cp branding/brands/relayscribe.json branding/brands/acme-notes.json
+cp branding/brands/agent-relay.json branding/brands/acme-notes.json
 $EDITOR branding/brands/acme-notes.json        # name, appId, colors, consent
 mkdir -p branding/assets/acme-notes
 cp ~/acme-logo.svg branding/assets/acme-notes/icon.svg
@@ -21,7 +21,7 @@ npm run branding:apply -- --brand acme-notes
 make dmg
 ```
 
-The default `relayscribe` brand is just `branding/brands/relayscribe.json` — the
+The default `agent-relay` brand is just `branding/brands/agent-relay.json` — the
 same mechanism, no special-casing.
 
 ## What a brand sets

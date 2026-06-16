@@ -8,10 +8,10 @@ import { deflateSync, inflateSync } from 'node:zlib'
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // Source icon: the active brand's SVG (set by branding/lib/apply-branding.mjs via
-// BRAND_ICON_SVG), defaulting to the neutral relayscribe brand icon.
+// BRAND_ICON_SVG), defaulting to the default agent-relay brand icon.
 const sourceSvg = process.env.BRAND_ICON_SVG
   ? resolve(process.env.BRAND_ICON_SVG)
-  : resolve(rootDir, 'branding/assets/relayscribe/icon.svg')
+  : resolve(rootDir, 'branding/assets/agent-relay/icon.svg')
 const iconPng = resolve(rootDir, 'assets/icon.png')
 const iconIcns = resolve(rootDir, 'assets/icon.icns')
 const swiftIcon = resolve(rootDir, 'Relayscribe/AppBundle/Resources/icon.icns')

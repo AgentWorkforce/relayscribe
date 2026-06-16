@@ -101,7 +101,7 @@ export function applyBrand(brandFile) {
 }
 
 function parseArgs(argv) {
-  const args = { brand: 'relayscribe', brandFile: null };
+  const args = { brand: 'agent-relay', brandFile: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--brand') args.brand = argv[++i];
     else if (argv[i] === '--brand-file') args.brandFile = argv[++i];

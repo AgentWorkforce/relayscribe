@@ -1,0 +1,652 @@
+name: Release (signed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Override release tag (optional)"
+        required: false
+        type: string
+      title:
+        description: "Override release title (optional)"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark the release as a prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-mac-app-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_EXECUTABLE: Relayscribe
+  BRAND: agent-relay
+  ENTITLEMENTS_PATH: build/entitlements.mac.plist
+  INFO_PLIST_PATH: Relayscribe/AppBundle/Info.plist
+  APP_ICON_PATH: Relayscribe/AppBundle/Resources/icon.icns
+  PACKAGED_RECALL_API_URL: https://us-west-2.recall.ai
+  PACKAGED_WORKER_URL: https://transcription.agentrelay.com
+  PACKAGED_RELAY_CONNECT_URL: https://transcription.agentrelay.com/integrations/{provider}/connect
+  PACKAGED_TRANSCRIPTS_INGEST_URL: https://agentrelay.com/cloud/api/v1/webhooks/transcripts
+
+jobs:
+  create-release:
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sidecar/package-lock.json
+
+      - name: Derive release metadata
+        id: meta
+        env:
+          CUSTOM_TAG: ${{ github.event.inputs.tag }}
+          CUSTOM_TITLE: ${{ github.event.inputs.title }}
+        run: |
+          set -euo pipefail
+
+          HEAD_SHA="$(git rev-parse HEAD)"
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${INFO_PLIST_PATH}")"
+          SHORT_SHA="${HEAD_SHA::7}"
+          RELEASE_TAG="${CUSTOM_TAG:-watchdog-recorder-v${APP_VERSION}-${SHORT_SHA}}"
+          RELEASE_NAME="${CUSTOM_TITLE:-Watchdog Recorder v${APP_VERSION} (${SHORT_SHA})}"
+
+          {
+            echo "app_version=${APP_VERSION}"
+            echo "head_sha=${HEAD_SHA}"
+            echo "release_tag=${RELEASE_TAG}"
+            echo "release_name=${RELEASE_NAME}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate signed distribution configuration
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          RECORDER_TRANSCRIBE_TOKEN: ${{ secrets.RECORDER_TRANSCRIBE_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+
+          [ -n "${CSC_LINK}" ] || missing+=("CSC_LINK")
+          [ -n "${CSC_KEY_PASSWORD}" ] || missing+=("CSC_KEY_PASSWORD")
+          [ -n "${APPLE_API_KEY_BASE64}" ] || missing+=("APPLE_API_KEY_BASE64")
+          [ -n "${APPLE_API_KEY_ID}" ] || missing+=("APPLE_API_KEY_ID")
+          [ -n "${APPLE_API_ISSUER}" ] || missing+=("APPLE_API_ISSUER")
+          [ -n "${RECORDER_TRANSCRIBE_TOKEN}" ] || missing+=("RECORDER_TRANSCRIBE_TOKEN")
+          [ -n "${PACKAGED_WORKER_URL}" ] || missing+=("PACKAGED_WORKER_URL")
+          [ -n "${PACKAGED_RECALL_API_URL}" ] || missing+=("PACKAGED_RECALL_API_URL")
+          [ -n "${PACKAGED_RELAY_CONNECT_URL}" ] || missing+=("PACKAGED_RELAY_CONNECT_URL")
+          [ -n "${PACKAGED_TRANSCRIPTS_INGEST_URL}" ] || missing+=("PACKAGED_TRANSCRIPTS_INGEST_URL")
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "Missing required secrets for signed macOS distribution: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Inject packaged sidecar configuration
+        env:
+          RECORDER_TRANSCRIBE_TOKEN: ${{ secrets.RECORDER_TRANSCRIBE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "Checking packaged worker health: ${PACKAGED_WORKER_URL}/health"
+          curl --fail --silent --show-error --max-time 20 "${PACKAGED_WORKER_URL}/health"
+          echo
+
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const config = {
+            workerUrl: process.env.PACKAGED_WORKER_URL,
+            recorderToken: process.env.RECORDER_TRANSCRIBE_TOKEN,
+            recallApiUrl: process.env.PACKAGED_RECALL_API_URL,
+            relayConnectUrl: process.env.PACKAGED_RELAY_CONNECT_URL,
+            transcriptsIngestUrl: process.env.PACKAGED_TRANSCRIPTS_INGEST_URL,
+          };
+
+          for (const [key, value] of Object.entries(config)) {
+            if (!value) {
+              throw new Error(`Missing ${key} for packaged sidecar config`);
+            }
+          }
+
+          fs.writeFileSync(
+            'sidecar/src/build-config.ts',
+            [
+              '// Generated by release-mac-app.yml at build time.',
+              '// Keep sidecar/.env or process env overrides for local development.',
+              `export const DEFAULT_WORKER_URL = ${JSON.stringify(config.workerUrl)};`,
+              `export const DEFAULT_RECORDER_TRANSCRIBE_TOKEN = ${JSON.stringify(config.recorderToken)};`,
+              `export const DEFAULT_RECALL_API_URL = ${JSON.stringify(config.recallApiUrl)};`,
+              `export const DEFAULT_RELAY_CONNECT_URL = ${JSON.stringify(config.relayConnectUrl)};`,
+              `export const DEFAULT_TRANSCRIPTS_INGEST_URL = ${JSON.stringify(config.transcriptsIngestUrl)};`,
+              '',
+            ].join('\n'),
+          );
+          NODE
+
+      - name: Install sidecar dependencies
+        working-directory: sidecar
+        run: npm ci
+
+      - name: Install icon tooling
+        run: command -v rsvg-convert >/dev/null || brew install librsvg
+
+      - name: Apply brand
+        run: |
+          set -euo pipefail
+          node branding/lib/apply-branding.mjs --brand "${BRAND}"
+          BRAND_ENV="branding/.generated/${BRAND}/build.env"
+          cat "${BRAND_ENV}" >> "$GITHUB_ENV"
+          APP_NAME="$(grep '^APP_NAME=' "${BRAND_ENV}" | cut -d= -f2-)"
+          echo "APP_BUNDLE_PATH=build/${APP_NAME}.app" >> "$GITHUB_ENV"
+          echo "PUBLIC_DMG_NAME=$(grep '^DMG_NAME=' "${BRAND_ENV}" | cut -d= -f2-)" >> "$GITHUB_ENV"
+
+      - name: Provision Recall Desktop SDK
+        working-directory: sidecar/node_modules/@recallai/desktop-sdk
+        run: node setup.js
+
+      - name: Build sidecar
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+          npm run build
+          grep -q 'relayscribe-sidecar' dist/server.js
+          grep -q '/integrations/:provider/connect' dist/server.js
+          grep -q 'requestHostedIntegrationConnect' dist/server.js
+
+      - name: Test Swift package
+        working-directory: Relayscribe
+        run: swift test
+
+      - name: Build Watchdog Recorder
+        working-directory: Relayscribe
+        run: swift build -c release
+
+      - name: Create .app bundle
+        run: |
+          set -euo pipefail
+
+          APP_CONTENTS="${APP_BUNDLE_PATH}/Contents"
+          SIDECAR_BUNDLE="${APP_CONTENTS}/Resources/sidecar"
+          SIDECAR_NODE="${APP_CONTENTS}/MacOS/sidecar-node"
+
+          rm -rf "${APP_BUNDLE_PATH}"
+          mkdir -p "${APP_CONTENTS}/MacOS"
+          mkdir -p "${APP_CONTENTS}/Resources"
+          mkdir -p "${SIDECAR_BUNDLE}/dist"
+          mkdir -p "${SIDECAR_BUNDLE}/node_modules"
+
+          cp "${INFO_PLIST_PATH}" "${APP_CONTENTS}/Info.plist"
+          cp "${APP_ICON_PATH}" "${APP_CONTENTS}/Resources/icon.icns"
+          cp "Relayscribe/.build/release/${APP_EXECUTABLE}" "${APP_CONTENTS}/MacOS/${APP_EXECUTABLE}"
+          chmod +x "${APP_CONTENTS}/MacOS/${APP_EXECUTABLE}"
+
+          cp -R sidecar/dist/. "${SIDECAR_BUNDLE}/dist/"
+          cp -R sidecar/node_modules/. "${SIDECAR_BUNDLE}/node_modules/"
+          cp sidecar/package.json "${SIDECAR_BUNDLE}/"
+          cp "$(command -v node)" "${SIDECAR_NODE}"
+          chmod +x "${SIDECAR_NODE}"
+
+          grep -q 'requestHostedIntegrationConnect' "${SIDECAR_BUNDLE}/dist/server.js"
+
+          echo -n "APPL????" > "${APP_CONTENTS}/PkgInfo"
+
+      - name: Validate app bundle metadata
+        run: |
+          set -euo pipefail
+
+          test -f "${APP_BUNDLE_PATH}/Contents/MacOS/${APP_EXECUTABLE}"
+          test -f "${APP_BUNDLE_PATH}/Contents/Resources/icon.icns"
+          test -f "${APP_BUNDLE_PATH}/Contents/Resources/sidecar/dist/server.js"
+          test -f "${APP_BUNDLE_PATH}/Contents/Resources/sidecar/package.json"
+          test -x "${APP_BUNDLE_PATH}/Contents/MacOS/sidecar-node"
+          if [ -e "${APP_BUNDLE_PATH}/Contents/Resources/sidecar/node" ]; then
+            echo "sidecar node must be packaged under Contents/MacOS, not Contents/Resources"
+            exit 1
+          fi
+          plutil -lint "${APP_BUNDLE_PATH}/Contents/Info.plist"
+
+          EXECUTABLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${APP_BUNDLE_PATH}/Contents/Info.plist")"
+          if [ "${EXECUTABLE_NAME}" != "${APP_EXECUTABLE}" ]; then
+            echo "Expected CFBundleExecutable to be ${APP_EXECUTABLE}, got: ${EXECUTABLE_NAME}"
+            exit 1
+          fi
+
+      - name: Import code signing certificate
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          echo -n "${CSC_LINK}" | base64 --decode -o "${CERT_PATH}"
+          security import "${CERT_PATH}" -P "${CSC_KEY_PASSWORD}" \
+            -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security list-keychain -d user -s "${KEYCHAIN_PATH}"
+
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "${KEYCHAIN_PATH}" \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "${SIGNING_IDENTITY}" ]; then
+            echo "No 'Developer ID Application' identity found in the imported certificate" >&2
+            security find-identity -v -p codesigning "${KEYCHAIN_PATH}" >&2
+            exit 1
+          fi
+          echo "Using signing identity: ${SIGNING_IDENTITY}"
+          echo "SIGNING_IDENTITY=${SIGNING_IDENTITY}" >> "$GITHUB_ENV"
+
+      - name: Code sign nested Mach-O files and app bundle
+        run: |
+          set -euo pipefail
+
+          sign_binary() {
+            local path="$1"
+            local kind="$2"
+
+            echo "Signing ${kind}: ${path}"
+            if [ "${kind}" = "executable" ] && [ -f "${ENTITLEMENTS_PATH}" ]; then
+              codesign --force --options runtime --timestamp \
+                --entitlements "${ENTITLEMENTS_PATH}" \
+                --sign "${SIGNING_IDENTITY}" \
+                "${path}"
+            else
+              codesign --force --options runtime --timestamp \
+                --sign "${SIGNING_IDENTITY}" \
+                "${path}"
+            fi
+          }
+
+          MACHO_LIST="$RUNNER_TEMP/watchdog-recorder-machos.txt"
+          python3 - "${APP_BUNDLE_PATH}" <<'PY' > "${MACHO_LIST}"
+          import os
+          import subprocess
+          import sys
+
+          app = sys.argv[1]
+          machos = []
+          for root, dirs, files in os.walk(app):
+              dirs[:] = [d for d in dirs if d != "_CodeSignature"]
+              for name in files:
+                  path = os.path.join(root, name)
+                  if os.path.islink(path):
+                      continue
+                  result = subprocess.run(
+                      ["file", path],
+                      check=False,
+                      capture_output=True,
+                      text=True,
+                  )
+                  if "Mach-O" in result.stdout:
+                      kind = "executable" if " executable" in result.stdout else "library"
+                      machos.append((path.count(os.sep), path, kind))
+
+          for _, path, kind in sorted(machos, key=lambda item: item[0], reverse=True):
+              print(f"{kind}\t{path}")
+          PY
+
+          MACHO_COUNT="$(wc -l < "${MACHO_LIST}" | tr -d ' ')"
+          echo "Discovered ${MACHO_COUNT} Mach-O files in ${APP_BUNDLE_PATH}"
+
+          while IFS=$'\t' read -r kind path; do
+            [ -n "${path}" ] || continue
+            # The outer .app signing step below signs the main executable with
+            # the app bundle seal. Sign every other Mach-O explicitly first.
+            if [ "${path}" = "${APP_BUNDLE_PATH}/Contents/MacOS/${APP_EXECUTABLE}" ]; then
+              continue
+            fi
+            sign_binary "${path}" "${kind}"
+          done < "${MACHO_LIST}"
+
+          find "${APP_BUNDLE_PATH}" -type d -name "*.framework" -print \
+            | awk '{ print length, $0 }' \
+            | sort -rn \
+            | cut -d' ' -f2- \
+            | while IFS= read -r framework; do
+                [ -n "${framework}" ] || continue
+                echo "Signing framework bundle: ${framework}"
+                codesign --force --options runtime --timestamp \
+                  --sign "${SIGNING_IDENTITY}" \
+                  "${framework}"
+              done
+
+          echo "Signing outer app bundle: ${APP_BUNDLE_PATH}"
+          if [ -f "${ENTITLEMENTS_PATH}" ]; then
+            codesign --force --options runtime --timestamp \
+              --entitlements "${ENTITLEMENTS_PATH}" \
+              --sign "${SIGNING_IDENTITY}" \
+              "${APP_BUNDLE_PATH}"
+          else
+            codesign --force --options runtime --timestamp \
+              --sign "${SIGNING_IDENTITY}" \
+              "${APP_BUNDLE_PATH}"
+          fi
+
+          echo "Verifying nested Mach-O signatures"
+          while IFS=$'\t' read -r _ path; do
+            [ -n "${path}" ] || continue
+            codesign --verify --strict --verbose=2 "${path}"
+          done < "${MACHO_LIST}"
+
+          SIDECAR_NODE_PATH="${APP_BUNDLE_PATH}/Contents/MacOS/sidecar-node"
+          codesign --verify --strict --verbose=2 "${SIDECAR_NODE_PATH}"
+          codesign -dv --verbose=4 "${SIDECAR_NODE_PATH}" 2> "$RUNNER_TEMP/sidecar-node-signature.txt"
+          cat "$RUNNER_TEMP/sidecar-node-signature.txt"
+          grep -q "Runtime Version=" "$RUNNER_TEMP/sidecar-node-signature.txt"
+          grep -q "Timestamp=" "$RUNNER_TEMP/sidecar-node-signature.txt"
+
+          echo "Verifying nested Mach-O signatures"
+          while IFS=$'\t' read -r _ path; do
+            [ -n "${path}" ] || continue
+            codesign --verify --strict --verbose=2 "${path}"
+          done < "${MACHO_LIST}"
+
+          echo "Verifying nested Mach-O signatures"
+          while IFS=$'\t' read -r _ path; do
+            [ -n "${path}" ] || continue
+            codesign --verify --strict --verbose=2 "${path}"
+          done < "${MACHO_LIST}"
+
+      - name: Notarize and staple app bundle
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          echo -n "${APPLE_API_KEY_BASE64}" | base64 --decode -o "${API_KEY_PATH}"
+
+          ditto -c -k --keepParent "${APP_BUNDLE_PATH}" "build/WatchdogRecorder-notarize.zip"
+
+          print_notary_log() {
+            local submission_id="$1"
+            [ -n "${submission_id}" ] || return 0
+
+            echo "::group::notarytool log ${submission_id}"
+            xcrun notarytool log "${submission_id}" \
+              --key "${API_KEY_PATH}" \
+              --key-id "${APPLE_API_KEY_ID}" \
+              --issuer "${APPLE_API_ISSUER}" \
+              --output-format json || true
+            echo "::endgroup::"
+          }
+
+          submit_for_notarization() {
+            local artifact="$1"
+            local label="$2"
+            local submit_output="$RUNNER_TEMP/${label}-notary-submit.json"
+
+            for attempt in 1 2 3; do
+              echo "Submitting ${artifact} for notarization (attempt ${attempt})"
+              set +e
+              xcrun notarytool submit "${artifact}" \
+                --key "${API_KEY_PATH}" \
+                --key-id "${APPLE_API_KEY_ID}" \
+                --issuer "${APPLE_API_ISSUER}" \
+                --wait --timeout 30m \
+                --output-format json > "${submit_output}" 2>&1
+              status=$?
+              set -e
+
+              cat "${submit_output}"
+
+              submission_id="$(python3 -c 'import json,re,sys; text=open(sys.argv[1], encoding="utf-8").read(); match=re.search(r"\"id\"\\s*:\\s*\"([^\"]+)\"", text) or re.search(r"\\bid:\\s*([0-9a-fA-F-]+)", text); print((json.loads(text).get("id", "") if text.lstrip().startswith("{") else (match.group(1) if match else "")))' "${submit_output}" || true)"
+
+              if [ "${status}" -eq 0 ]; then
+                return 0
+              fi
+
+              print_notary_log "${submission_id}"
+
+              if grep -Eiq '"status"[[:space:]]*:[[:space:]]*"Invalid"|status:[[:space:]]*Invalid' "${submit_output}"; then
+                echo "${label} notarization was rejected as Invalid; not retrying deterministic signing errors."
+                return "${status}"
+              fi
+
+              echo "notarytool attempt ${attempt} failed; retrying in 30s..."
+              sleep 30
+            done
+
+            echo "${label} notarization failed after 3 attempts"
+            return 1
+          }
+
+          if ! submit_for_notarization "build/WatchdogRecorder-notarize.zip" "app"; then
+            exit 1
+          fi
+
+          xcrun stapler staple "${APP_BUNDLE_PATH}"
+          xcrun stapler validate "${APP_BUNDLE_PATH}"
+          rm -f "build/WatchdogRecorder-notarize.zip"
+
+      - name: Verify app signature
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE_PATH}"
+          test -f "${APP_BUNDLE_PATH}/Contents/_CodeSignature/CodeResources"
+          spctl -a -vvv --type exec "${APP_BUNDLE_PATH}"
+
+      - name: Verify quarantined app launches sidecar
+        run: |
+          set -euo pipefail
+
+          cleanup() {
+            osascript -e "quit app \"${APP_NAME}\"" >/dev/null 2>&1 || true
+            pkill -x "${APP_EXECUTABLE}" >/dev/null 2>&1 || true
+            pkill -x "sidecar-node" >/dev/null 2>&1 || true
+            xattr -dr com.apple.quarantine "${APP_BUNDLE_PATH}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          cleanup
+
+          QUARANTINE_VALUE="0081;$(printf '%x' "$(date +%s)");GitHubActions;CI"
+          find "${APP_BUNDLE_PATH}" -exec xattr -w com.apple.quarantine "${QUARANTINE_VALUE}" {} +
+          xattr -p com.apple.quarantine "${APP_BUNDLE_PATH}/Contents/MacOS/sidecar-node"
+
+          open "${APP_BUNDLE_PATH}"
+
+          for _ in $(seq 1 45); do
+            if curl --fail --silent --show-error --max-time 2 \
+              "http://127.0.0.1:3700/health" > "$RUNNER_TEMP/sidecar-health.json"; then
+              cat "$RUNNER_TEMP/sidecar-health.json"
+              grep -q '"relayscribe-sidecar"' "$RUNNER_TEMP/sidecar-health.json"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Quarantined app did not launch sidecar on :3700" >&2
+          pgrep -lf 'Relayscribe|sidecar-node|node .*server.js' || true
+          exit 1
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+
+          rm -rf build/dmg-stage
+          mkdir -p build/dmg-stage
+          cp -R "${APP_BUNDLE_PATH}" build/dmg-stage/
+          ln -s /Applications build/dmg-stage/Applications
+
+          hdiutil create -volname "${APP_NAME}" \
+            -srcfolder build/dmg-stage \
+            -ov -format UDZO \
+            "build/${PUBLIC_DMG_NAME}"
+
+      - name: Code sign DMG
+        run: |
+          set -euo pipefail
+          codesign --force --timestamp \
+            --sign "${SIGNING_IDENTITY}" \
+            "build/${PUBLIC_DMG_NAME}"
+          codesign --verify --verbose=2 "build/${PUBLIC_DMG_NAME}"
+
+      - name: Notarize DMG
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          echo -n "${APPLE_API_KEY_BASE64}" | base64 --decode -o "${API_KEY_PATH}"
+
+          print_notary_log() {
+            local submission_id="$1"
+            [ -n "${submission_id}" ] || return 0
+
+            echo "::group::notarytool log ${submission_id}"
+            xcrun notarytool log "${submission_id}" \
+              --key "${API_KEY_PATH}" \
+              --key-id "${APPLE_API_KEY_ID}" \
+              --issuer "${APPLE_API_ISSUER}" \
+              --output-format json || true
+            echo "::endgroup::"
+          }
+
+          submit_for_notarization() {
+            local artifact="$1"
+            local label="$2"
+            local submit_output="$RUNNER_TEMP/${label}-notary-submit.json"
+
+            for attempt in 1 2 3; do
+              echo "Submitting ${artifact} for notarization (attempt ${attempt})"
+              set +e
+              xcrun notarytool submit "${artifact}" \
+                --key "${API_KEY_PATH}" \
+                --key-id "${APPLE_API_KEY_ID}" \
+                --issuer "${APPLE_API_ISSUER}" \
+                --wait --timeout 30m \
+                --output-format json > "${submit_output}" 2>&1
+              status=$?
+              set -e
+
+              cat "${submit_output}"
+
+              submission_id="$(python3 -c 'import json,re,sys; text=open(sys.argv[1], encoding="utf-8").read(); match=re.search(r"\"id\"\\s*:\\s*\"([^\"]+)\"", text) or re.search(r"\\bid:\\s*([0-9a-fA-F-]+)", text); print((json.loads(text).get("id", "") if text.lstrip().startswith("{") else (match.group(1) if match else "")))' "${submit_output}" || true)"
+
+              if [ "${status}" -eq 0 ]; then
+                return 0
+              fi
+
+              print_notary_log "${submission_id}"
+
+              if grep -Eiq '"status"[[:space:]]*:[[:space:]]*"Invalid"|status:[[:space:]]*Invalid' "${submit_output}"; then
+                echo "${label} notarization was rejected as Invalid; not retrying deterministic signing errors."
+                return "${status}"
+              fi
+
+              echo "notarytool attempt ${attempt} failed; retrying in 30s..."
+              sleep 30
+            done
+
+            echo "${label} notarization failed after 3 attempts"
+            return 1
+          }
+
+          if ! submit_for_notarization "build/${PUBLIC_DMG_NAME}" "dmg"; then
+            exit 1
+          fi
+
+          xcrun stapler staple "build/${PUBLIC_DMG_NAME}"
+          xcrun stapler validate "build/${PUBLIC_DMG_NAME}"
+
+      - name: Verify public DMG eligibility
+        run: |
+          set -euo pipefail
+
+          codesign --verify --verbose=2 "build/${PUBLIC_DMG_NAME}"
+          spctl -a -vvv --type open --context context:primary-signature "build/${PUBLIC_DMG_NAME}"
+
+          VERIFY_ROOT="$(mktemp -d)"
+          hdiutil attach "build/${PUBLIC_DMG_NAME}" -mountpoint "${VERIFY_ROOT}" -nobrowse -readonly
+          trap 'hdiutil detach "${VERIFY_ROOT}"' EXIT
+
+          test -f "${VERIFY_ROOT}/${APP_NAME}.app/Contents/_CodeSignature/CodeResources"
+          codesign --verify --deep --strict --verbose=2 "${VERIFY_ROOT}/${APP_NAME}.app"
+          spctl -a -vvv --type exec "${VERIFY_ROOT}/${APP_NAME}.app"
+
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          PRERELEASE: ${{ github.event.inputs.prerelease }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          RELEASE_NAME: ${{ steps.meta.outputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists"
+            exit 0
+          fi
+
+          cat > release-notes.md <<EOF
+          Manual macOS release for commit ${HEAD_SHA}.
+
+          Signed and notarized Watchdog Recorder macOS release artifact built from this workflow run.
+          EOF
+
+          EXTRA_ARGS=()
+          if [ "${PRERELEASE}" = "true" ]; then
+            EXTRA_ARGS+=(--prerelease)
+          fi
+
+          gh release create "${RELEASE_TAG}" \
+            --target "${HEAD_SHA}" \
+            --title "${RELEASE_NAME}" \
+            --generate-notes \
+            --notes-file release-notes.md \
+            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+
+      - name: Upload DMG to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "build/${PUBLIC_DMG_NAME}" \
+            --clobber
+
+      - name: Upload macOS build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchdog-recorder-macos-${{ github.run_id }}
+          path: |
+            build/${{ env.PUBLIC_DMG_NAME }}
+            build/${{ env.APP_NAME }}.app
+          if-no-files-found: warn
+          retention-days: 30

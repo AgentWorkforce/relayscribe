@@ -5,13 +5,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Relayscribe</string>
+	<string>Agent Relay</string>
 	<key>CFBundleExecutable</key>
 	<string>Relayscribe</string>
 	<key>CFBundleIconFile</key>
 	<string>icon</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.agentrelay.relayscribe</string>
+	<string>com.agentrelay.recorder</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -27,13 +27,13 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Relayscribe uses Apple Events to identify active meeting windows.</string>
+	<string>Agent Relay uses Apple Events to identify active meeting windows.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Relayscribe captures meeting and brainstorm audio locally on your Mac. No bot joins the call.</string>
+	<string>Agent Relay captures meeting and brainstorm audio locally on your Mac. No bot joins the call.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Relayscribe needs screen recording access to detect active meeting windows.</string>
+	<string>Agent Relay needs screen recording access to detect active meeting windows.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

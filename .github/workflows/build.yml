@@ -14,7 +14,7 @@ on:
       brand:
         description: "Brand id under branding/brands/ (default relayscribe)"
         required: false
-        default: "relayscribe"
+        default: "agent-relay"
         type: string
 
 permissions:
@@ -25,7 +25,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     env:
-      BRAND: ${{ github.event.inputs.brand || 'relayscribe' }}
+      BRAND: ${{ github.event.inputs.brand || 'agent-relay' }}
       APP_EXECUTABLE: Relayscribe
       APP_BUNDLE_PATH: build/app/Relayscribe.app
 
