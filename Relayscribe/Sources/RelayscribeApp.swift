@@ -31,6 +31,11 @@ public struct RelayscribeApp: App {
                 .task(id: "startup", priority: .userInitiated) {
                     await startSidecar()
                 }
+                .task(id: "connectivity", priority: .userInitiated) {
+                    // Load existing workspace integration statuses at launch. The
+                    // lazy .window content's .task is unreliable, so run it here.
+                    await account.refreshIntegrationStatusesIfSignedIn()
+                }
         }
         .menuBarExtraStyle(.window)
 

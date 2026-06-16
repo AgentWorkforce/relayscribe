@@ -227,6 +227,7 @@ final class RelayAccount {
             connectionStatuses = next
         } catch {
             // Keep any prior status; a transient read failure shouldn't blank the UI.
+            print("[relay] integration status refresh failed: \(error)")
         }
     }
 

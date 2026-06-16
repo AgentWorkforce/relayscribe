@@ -22,6 +22,10 @@ Release builds are customer-zero-config: the signed app is compiled with the pro
 
 Release builds are customer-zero-config: the signed app is compiled with the production worker URL, the production Recall API URL, and the design-partner shared recorder token. Local `.env` values still override those defaults for development and smoke tests.
 
+## Downstream: meeting-actions and the factory pipeline
+
+Relayscribe only produces transcripts; the work happens downstream. Once a transcript lands at `/recall/recordings/<id>.json` in the workspace relayfile mount, the `meeting-actions` persona (in `AgentWorkforce/agents/`) reads it, routes each item (Meeting mode → one Linear issue per action item; Brainstorm mode → one broader-scope issue), and posts a Slack digest. Each filed issue carries a recipe label (`agent:single` / `agent:team`) and the `source_language`. The factory then dispatches an agent (or team) per issue into the relay fleet and opens a PR. Relaycast handles placement; Relayscribe is unaware of any of it.
+
 ## Requirements
 
 - macOS 14+
