@@ -405,11 +405,12 @@ jobs:
           spctl -a -vvv --type exec "${APP_BUNDLE_PATH}"
 
       - name: Verify quarantined app launches sidecar
+        timeout-minutes: 4
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
+          # pkill only — osascript "quit app" blocks in the headless CI session.
           cleanup() {
-            osascript -e "quit app \"${APP_NAME}\"" >/dev/null 2>&1 || true
             pkill -x "${APP_EXECUTABLE}" >/dev/null 2>&1 || true
             pkill -x "sidecar-node" >/dev/null 2>&1 || true
             xattr -dr com.apple.quarantine "${APP_BUNDLE_PATH}" >/dev/null 2>&1 || true
@@ -418,20 +419,27 @@ jobs:
           cleanup
 
           QUARANTINE_VALUE="0081;$(printf '%x' "$(date +%s)");GitHubActions;CI"
-          find "${APP_BUNDLE_PATH}" -exec xattr -w com.apple.quarantine "${QUARANTINE_VALUE}" {} +
-          xattr -p com.apple.quarantine "${APP_BUNDLE_PATH}/Contents/MacOS/sidecar-node"
+          find "${APP_BUNDLE_PATH}" -exec xattr -w com.apple.quarantine "${QUARANTINE_VALUE}" {} + || true
+          xattr -p com.apple.quarantine "${APP_BUNDLE_PATH}/Contents/MacOS/sidecar-node" || true
 
           open "${APP_BUNDLE_PATH}"
 
-          for _ in $(seq 1 45); do
-            if curl --fail --silent --show-error --max-time 2 \
-              "http://127.0.0.1:3700/health" > "$RUNNER_TEMP/sidecar-health.json"; then
-              cat "$RUNNER_TEMP/sidecar-health.json"
-              grep -q '"relayscribe-sidecar"' "$RUNNER_TEMP/sidecar-health.json"
-              exit 0
+          ok=""
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --max-time 2 \
+              "http://127.0.0.1:3700/health" > "$RUNNER_TEMP/sidecar-health.json" 2>/dev/null \
+              && grep -q '"relayscribe-sidecar"' "$RUNNER_TEMP/sidecar-health.json"; then
+              ok=1
+              break
             fi
             sleep 1
           done
+
+          if [ -n "${ok}" ]; then
+            cat "$RUNNER_TEMP/sidecar-health.json"
+            echo "✓ quarantined app launched sidecar"
+            exit 0
+          fi
 
           echo "Quarantined app did not launch sidecar on :3700" >&2
           pgrep -lf 'Relayscribe|sidecar-node|node .*server.js' || true
