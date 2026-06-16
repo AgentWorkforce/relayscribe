@@ -10,9 +10,15 @@ Native macOS menu-bar recorder that captures meeting audio locally — **no bot 
 
 ## How it works
 
-**Relayscribe has one job: transcribe.** It captures your meeting or brainstorm locally (no bot joins your call), sends the audio to the transcription backend, and drops the result into your Relay workspace at `/recall/recordings/<id>.json`.
+**Relayscribe has one job: transcribe.** It captures your meeting or brainstorm locally (no bot joins your call), sends the audio to the transcription backend, and hands the transcript to your Relay workspace.
 
-**The proactive agent does everything else.** When the transcript lands, the listening agent persona fires — extracting action items, filing issues, opening PRs, writing to Notion, pinging Slack, or whatever flow you configure. Relayscribe is agnostic to all of it.
+**The proactive agent does everything else.** The moment a transcript lands, the listening agent persona fires — extracting action items, filing issues, opening PRs, writing to Notion, pinging Slack, or whatever flow you configure. Relayscribe is agnostic to all of it.
+
+**Where your transcripts show up:**
+- **In the app** — every recording is listed and searchable right in the Relayscribe menu-bar app (stored locally, on your machine).
+- **Wherever your persona routes it** — the Linear issue, Slack digest, Notion page, or PR your agent produces. This is where most teams actually read the result.
+
+*(Under the hood, the transcript is delivered to your workspace at `/recall/recordings/<id>.json` — the internal address the proactive agents watch. You never need to touch it directly.)*
 
 ```
 Meeting / brainstorm audio
