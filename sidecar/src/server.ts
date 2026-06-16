@@ -4,7 +4,10 @@ import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import {
+  exportFilename,
+  formatTranscript,
   getTranscript,
+  isExportFormat,
   listTranscripts,
   saveTranscript,
   type TranscriptRecord,
@@ -641,6 +644,25 @@ app.get('/transcripts/:id', (c) => {
   const record = getTranscript(c.req.param('id'));
   if (!record) return c.json({ error: 'not found' }, 404);
   return c.json(record);
+});
+
+// Export a single transcript as a downloadable .txt or .md document. JSON is
+// already available from GET /transcripts/:id, so this covers the human-readable
+// formats. ?format defaults to txt.
+app.get('/transcripts/:id/export', (c) => {
+  const format = c.req.query('format') ?? 'txt';
+  if (!isExportFormat(format)) {
+    return c.json({ error: 'format must be txt or md' }, 400);
+  }
+  const record = getTranscript(c.req.param('id'));
+  if (!record) return c.json({ error: 'not found' }, 404);
+
+  const body = formatTranscript(record, format);
+  const contentType = format === 'md' ? 'text/markdown; charset=utf-8' : 'text/plain; charset=utf-8';
+  return c.body(body, 200, {
+    'content-type': contentType,
+    'content-disposition': `attachment; filename="${exportFilename(record)}.${format}"`,
+  });
 });
 
 // ── Retry queue ───────────────────────────────────────────────────────────────
