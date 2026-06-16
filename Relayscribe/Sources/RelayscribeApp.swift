@@ -19,9 +19,6 @@ public struct RelayscribeApp: App {
                 .environment(sidecar)
                 .environment(settings)
                 .environment(account)
-                .task(id: "startup", priority: .userInitiated) {
-                    await startSidecar()
-                }
                 .onChange(of: credential) { _, newValue in
                     sidecar.setWorkspaceCredential(newValue)
                 }
@@ -29,7 +26,12 @@ public struct RelayscribeApp: App {
                     sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
                 }
         } label: {
+            // The label is always rendered (the menu-bar icon), so this runs at
+            // launch — start the sidecar here, not on the lazy .window content.
             MenuBarLabel(status: store.effectiveMenuStatus(mode: settings.mode))
+                .task(id: "startup", priority: .userInitiated) {
+                    await startSidecar()
+                }
         }
         .menuBarExtraStyle(.window)
 
