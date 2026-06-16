@@ -6,6 +6,8 @@ public struct RelayscribeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var store = RecordingStore()
     @State private var sidecar = SidecarManager()
+    @State private var settings = RecorderSettings()
+    @State private var account = RelayAccount()
     @State private var credential: WorkspaceCredential? = CredentialStore.load()
 
     public init() {}
@@ -18,20 +20,16 @@ public struct RelayscribeApp: App {
                 .environment(settings)
                 .environment(account)
                 .task(id: "startup", priority: .userInitiated) {
-                    sidecar.setWorkspaceCredential(credential)
-                    await sidecar.ensureRunning()
-                    if case .running = sidecar.state {
-                        store.onSidecarReady(settings: settings)
-                    }
+                    await startSidecar()
                 }
                 .onChange(of: credential) { _, newValue in
                     sidecar.setWorkspaceCredential(newValue)
                 }
+                .onChange(of: account.credential?.workspaceId) {
+                    sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
+                }
         } label: {
             MenuBarLabel(status: store.effectiveMenuStatus(mode: settings.mode))
-                .task(id: "startup", priority: .userInitiated) {
-                    await startSidecar()
-                }
         }
         .menuBarExtraStyle(.window)
 
@@ -47,15 +45,6 @@ public struct RelayscribeApp: App {
                     sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
                 }
         }
-    }
-
-    private func startSidecar() async {
-        sidecar.setWorkspaceCredential(credential)
-        await sidecar.ensureRunning()
-        if case .running = sidecar.state {
-            sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
-            store.onSidecarReady(settings: settings)
-        }
 
         Window("Generated UI", id: "generated-ui") {
             GenUIView()
@@ -64,13 +53,8 @@ public struct RelayscribeApp: App {
     }
 
     private func startSidecar() async {
-        await sidecar.ensureRunning()
-        if case .running = sidecar.state {
-            store.onSidecarReady(settings: settings)
-        }
-    }
-
-    private func startSidecar() async {
+        sidecar.setWorkspaceCredential(credential)
+        sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
         await sidecar.ensureRunning()
         if case .running = sidecar.state {
             store.onSidecarReady(settings: settings)

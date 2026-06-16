@@ -24,6 +24,9 @@ if (!existsSync(sourceSvg)) {
 const tempRoot = mkdtempSync(join(tmpdir(), 'relayscribe-icon-'))
 const iconsetDir = join(tempRoot, 'icon.iconset')
 mkdirSync(iconsetDir, { recursive: true })
+// Output dirs may not exist on a fresh checkout (assets/ holds only generated,
+// gitignored files, so git does not track the empty dir).
+mkdirSync(dirname(iconPng), { recursive: true })
 mkdirSync(dirname(swiftIcon), { recursive: true })
 
 const iconSpecs = [

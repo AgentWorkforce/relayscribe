@@ -223,12 +223,13 @@ struct GenUIView: View {
     private func startPolling(jobId: String) {
         pollTask?.cancel()
         let startedAt = Date()
-        pollTask = Task { [weak self] in
-            guard let self else { return }
+        // GenUIView is a struct; its @State is reference-backed, so capture by
+        // value (no weak self — structs can't be weakly captured).
+        pollTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(2500))
                 guard !Task.isCancelled else { break }
-                await self.checkStatus(jobId: jobId, startedAt: startedAt)
+                await checkStatus(jobId: jobId, startedAt: startedAt)
             }
         }
     }

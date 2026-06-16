@@ -21,6 +21,10 @@ final class SidecarManager {
     private var process: Process?
     private var monitorTask: Task<Void, Never>?
     private var workspaceCredential: WorkspaceCredential?
+    private var relayWorkspaceId: String?
+    // Stamped once per launch and passed to the sidecar so the health check can
+    // confirm we're talking to the instance we started (not a stale one).
+    private var sidecarInstanceId = ""
 
     // MARK: - Public
 
@@ -218,7 +222,7 @@ final class SidecarManager {
     private func buildEnvironment(sidecarRoot: URL) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["SIDECAR_PORT"] = String(AppConfiguration.sidecarPort)
-        env["RELAYSCRIBE_SIDECAR_INSTANCE_ID"] = UUID().uuidString
+        env["RELAYSCRIBE_SIDECAR_INSTANCE_ID"] = sidecarInstanceId
         let binPath = sidecarRoot.appendingPathComponent("node_modules/.bin").path
         let current = env["PATH"] ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
         env["PATH"] = "\(binPath):\(current)"
@@ -277,6 +281,37 @@ final class SidecarManager {
             guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
             for l in line.components(separatedBy: "\n") where !l.isEmpty {
                 print("\(prefix) \(l)")
+            }
+        }
+    }
+
+    // Pick a usable loopback port, falling back through 3701–3799 if the
+    // preferred one is taken (e.g. a stale sidecar or another app instance).
+    private func resolveSidecarPort(preferred: Int) -> Int {
+        if canBindLoopback(port: preferred) { return preferred }
+        for port in 3701...3799 where canBindLoopback(port: port) {
+            return port
+        }
+        return preferred
+    }
+
+    private func canBindLoopback(port: Int) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(port).bigEndian
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        return withUnsafePointer(to: &addr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
             }
         }
     }
