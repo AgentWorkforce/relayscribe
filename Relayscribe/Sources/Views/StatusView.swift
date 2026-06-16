@@ -23,8 +23,6 @@ struct StatusView: View {
             Divider().padding(.vertical, 4)
             RelayAccountView()
             Divider().padding(.vertical, 4)
-            RelayAccountView()
-            Divider().padding(.vertical, 4)
             connectControls
             Divider().padding(.vertical, 4)
             modeControls(settings: $settings)
@@ -233,29 +231,14 @@ struct StatusView: View {
                     .buttonStyle(.bordered)
                 }
                 Spacer()
-                Button("Settings...") {
-                    openSettingsWindow()
-                }
-                .buttonStyle(.bordered)
-                Spacer()
-                Button("Settings...") {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                SettingsLink {
+                    Text("Settings...")
                 }
                 .buttonStyle(.bordered)
                 Button("Quit") { NSApp.terminate(nil) }
                     .buttonStyle(.bordered)
             }
         }
-    }
-
-    /// Opens the SwiftUI Settings scene. Accessory (LSUIElement) apps are not
-    /// active, so the window otherwise opens hidden/behind — activating the app
-    /// first brings it frontmost. (The macOS 14 `openSettings`/`SettingsLink`
-    /// APIs aren't available in the Command Line Tools SwiftUI module used to
-    /// build the app, so we drive the documented settings action directly.)
-    private func openSettingsWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     // MARK: - Computed display values

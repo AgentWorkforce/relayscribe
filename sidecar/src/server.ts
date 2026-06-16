@@ -35,6 +35,13 @@ import {
   type RecorderSettings,
 } from './recorder-settings';
 import { createUiRoutes } from './ui-routes';
+import {
+  DEFAULT_RECALL_API_URL,
+  DEFAULT_RECORDER_TRANSCRIBE_TOKEN,
+  DEFAULT_RELAY_CONNECT_URL,
+  DEFAULT_TRANSCRIPTS_INGEST_URL,
+  DEFAULT_WORKER_URL,
+} from './build-config';
 
 // Declared early so process.on handlers below can reference it.
 // The Recall Desktop SDK binary can't run in headless/terminal contexts —
@@ -70,17 +77,21 @@ process.on('unhandledRejection', (reason) => {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.SIDECAR_PORT ?? '3700', 10);
-const WORKER_URL = (process.env.WORKER_URL ?? '').replace(/\/+$/, '');
-const RECALL_API_URL = process.env.RECALL_API_URL ?? 'https://us-west-2.recall.ai';
-const TRANSCRIPTS_INGEST_URL = (process.env.TRANSCRIPTS_INGEST_URL ?? '').trim();
+// Config resolves from env first (set by the app/.env at runtime), then falls
+// back to the values baked into build-config.ts at release time. The committed
+// build-config.ts ships empty/dev defaults; the release workflow overwrites it
+// with the packaged worker/connect URLs.
+const WORKER_URL = (process.env.WORKER_URL ?? DEFAULT_WORKER_URL).replace(/\/+$/, '');
+const RECALL_API_URL = process.env.RECALL_API_URL ?? DEFAULT_RECALL_API_URL ?? 'https://us-west-2.recall.ai';
+const TRANSCRIPTS_INGEST_URL = (process.env.TRANSCRIPTS_INGEST_URL ?? DEFAULT_TRANSCRIPTS_INGEST_URL).trim();
 // Hosted OAuth connect endpoint template (supports a {provider} placeholder).
 // Seeded at launch via the RELAY_CONNECT_URL env var; falls back to WORKER_URL.
-const RELAY_CONNECT_URL = (process.env.RELAY_CONNECT_URL ?? '').trim();
+const RELAY_CONNECT_URL = (process.env.RELAY_CONNECT_URL ?? DEFAULT_RELAY_CONNECT_URL).trim();
 
 // Per-customer credential: seeded at launch via RELAY_ACCESS_TOKEN env var,
 // refreshed at runtime via POST /relay/auth-token. DESKTOP_SHARED_TOKEN is
 // a deprecated fallback for single-partner deploys baked before this PR.
-const DEPRECATED_SHARED_TOKEN = process.env.DESKTOP_SHARED_TOKEN ?? '';
+const DEPRECATED_SHARED_TOKEN = process.env.DESKTOP_SHARED_TOKEN ?? DEFAULT_RECORDER_TRANSCRIBE_TOKEN;
 const INSTANCE_ID = process.env.RELAYSCRIBE_SIDECAR_INSTANCE_ID ?? 'unknown';
 
 interface RuntimeCredential { accessToken: string; workspaceId: string; apiUrl: string }
