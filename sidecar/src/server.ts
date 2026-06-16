@@ -29,6 +29,7 @@ import {
   type RelayWorkspaceContext,
 } from './relay-workspace';
 import {
+  normalizeLanguage,
   normalizeMode,
   normalizeRecorderSettings,
   parseBoolean,
@@ -88,10 +89,6 @@ const TRANSCRIPTS_INGEST_URL = (process.env.TRANSCRIPTS_INGEST_URL ?? DEFAULT_TR
 // Seeded at launch via the RELAY_CONNECT_URL env var; falls back to WORKER_URL.
 const RELAY_CONNECT_URL = (process.env.RELAY_CONNECT_URL ?? DEFAULT_RELAY_CONNECT_URL).trim();
 
-// Per-customer credential: seeded at launch via RELAY_ACCESS_TOKEN env var,
-// refreshed at runtime via POST /relay/auth-token. DESKTOP_SHARED_TOKEN is
-// a deprecated fallback for single-partner deploys baked before this PR.
-const DEPRECATED_SHARED_TOKEN = process.env.DESKTOP_SHARED_TOKEN ?? DEFAULT_RECORDER_TRANSCRIBE_TOKEN;
 const INSTANCE_ID = process.env.RELAYSCRIBE_SIDECAR_INSTANCE_ID ?? 'unknown';
 
 interface RuntimeCredential { accessToken: string; workspaceId: string; apiUrl: string }
@@ -102,14 +99,17 @@ let runtimeCredential: RuntimeCredential = {
   apiUrl: (process.env.RELAY_API_URL ?? '').replace(/\/+$/, ''),
 };
 
+// Transcription requires a signed-in Relay credential. DESKTOP_SHARED_TOKEN
+// is a local dev override only — never compiled into release builds.
 function resolveWorkerToken(): string {
   if (runtimeCredential.accessToken) return runtimeCredential.accessToken;
-  if (DEPRECATED_SHARED_TOKEN) return DEPRECATED_SHARED_TOKEN;
+  if (process.env.DESKTOP_SHARED_TOKEN) return process.env.DESKTOP_SHARED_TOKEN;
   return '';
 }
 
 let recorderSettings: RecorderSettings = {
   mode: normalizeMode(process.env.RELAYSCRIBE_MODE),
+  language: normalizeLanguage(process.env.RELAYSCRIBE_LANGUAGE),
   automation_settings: {
     create_linear_issues: parseBoolean(process.env.RELAYSCRIBE_CREATE_LINEAR_ISSUES),
     create_github_issues: parseBoolean(process.env.RELAYSCRIBE_CREATE_GITHUB_ISSUES),
@@ -170,6 +170,7 @@ function setState(next: SidecarState) {
 function settingsPayload(): RecorderSettings {
   return {
     mode: recorderSettings.mode,
+    language: recorderSettings.language,
     automation_settings: { ...recorderSettings.automation_settings },
   };
 }
@@ -598,7 +599,7 @@ app.get('/config', (c) =>
   c.json({
     hasWorkerUrl: Boolean(WORKER_URL),
     hasRelayToken: Boolean(runtimeCredential.accessToken),
-    hasDeprecatedSharedToken: Boolean(DEPRECATED_SHARED_TOKEN),
+    hasDeprecatedSharedToken: Boolean(process.env.DESKTOP_SHARED_TOKEN),
     workspaceId: runtimeCredential.workspaceId || undefined,
     recallApiUrl: RECALL_API_URL,
     relayConnectUrl: RELAY_CONNECT_URL,

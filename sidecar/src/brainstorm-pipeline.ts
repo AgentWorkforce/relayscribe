@@ -88,7 +88,13 @@ async function readResponsePayload(res: Response): Promise<unknown> {
 async function transcribeAudio(input: BrainstormPipelineInput): Promise<string> {
   const workerUrl = requireNonEmptyUrl(input.workerUrl, 'WORKER_URL not configured', 'missing_worker_url');
   const token = requireNonEmpty(input.transcribeToken, 'RECORDER_TRANSCRIBE_TOKEN not configured', 'missing_token');
-  const res = await (input.fetcher ?? fetch)(`${workerUrl}/transcribe`, {
+  // Forward the language hint so the worker routes to the right national-library
+  // model. Defaults to Norwegian; unset/empty falls back to the worker's default.
+  const language = (input.settings.language || '').trim();
+  const url = language
+    ? `${workerUrl}/transcribe?language=${encodeURIComponent(language)}`
+    : `${workerUrl}/transcribe`;
+  const res = await (input.fetcher ?? fetch)(url, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${token}`,

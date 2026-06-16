@@ -152,8 +152,10 @@ describe('runBrainstormPipelineWithPersistence', () => {
 
   it('persists audio, calls pipeline, marks transcribed on success', async () => {
     const store = makeMockStore();
+    const transcribeUrls: string[] = [];
     const fetcher: typeof fetch = async (url) => {
-      if (String(url).endsWith('/transcribe')) {
+      if (new URL(String(url)).pathname.endsWith('/transcribe')) {
+        transcribeUrls.push(String(url));
         return new Response(JSON.stringify({ text: 'hello world' }));
       }
       return new Response('{}', { status: 202 });
@@ -165,6 +167,9 @@ describe('runBrainstormPipelineWithPersistence', () => {
     assert.equal(store.transcribed[0], 'persist-1');
     assert.equal(store.failed.length, 0);
     assert.equal(result.transcript, 'hello world');
+    // DEFAULT_SETTINGS.language ('no') is forwarded to the worker so it routes
+    // to the right national-library model.
+    assert.equal(transcribeUrls[0], 'https://worker.example/transcribe?language=no');
   });
 
   it('persists audio and marks failed when transcription returns 502', async () => {
@@ -185,7 +190,7 @@ describe('runBrainstormPipelineWithPersistence', () => {
     const store = makeMockStore();
     store.persistAudio = async () => { throw new Error('disk full'); };
     const fetcher: typeof fetch = async (url) => {
-      if (String(url).endsWith('/transcribe')) return new Response(JSON.stringify({ text: 'ok' }));
+      if (new URL(String(url)).pathname.endsWith('/transcribe')) return new Response(JSON.stringify({ text: 'ok' }));
       return new Response('{}', { status: 202 });
     };
 

@@ -1,215 +1,120 @@
-# Relayscribe
+# Agent Relay — Relayscribe
 
-Native macOS menu-bar recorder for Relay. The app records meeting audio locally through the Recall Desktop SDK, so no bot joins the call.
+Native macOS menu-bar recorder that captures meeting audio locally — **no bot joins your call, and recordings are never stored.**
 
-## Architecture
+[![Download for macOS](https://img.shields.io/badge/Download-Agent_Relay_for_macOS-black?style=for-the-badge&logo=apple)](https://github.com/AgentWorkforce/relayscribe/releases/latest/download/AgentRelay.dmg)
 
-Relayscribe is a Swift app with a local TypeScript sidecar:
+**Requires macOS 14+.** Transcription requires a Relay account — [email hi@agentrelay.com](mailto:hi@agentrelay.com) to become a design partner.
 
-1. `Relayscribe.app` launches as a tray-only macOS app using SwiftUI `MenuBarExtra`.
-2. `SidecarManager` starts the embedded Node sidecar from `Contents/Resources/sidecar`.
-3. The sidecar runs a Hono HTTP server and initializes `@recallai/desktop-sdk`.
-4. In Meeting mode, when the Recall Desktop SDK detects a meeting window, the sidecar calls the Relay backend to mint an SDK upload.
-5. The sidecar passes the returned upload token to `RecallAiSdk.startRecording`.
-6. Recall sends `sdk_upload.complete` to the cloud transcription worker, which transcribes the audio and forwards the transcript to the ingest endpoint.
-7. meeting-actions watches `/recall/recordings/**` and files the Linear issues plus Slack digest.
-8. In Brainstorm mode, the native menu-bar UI records microphone audio directly, uploads it to the sidecar, and the sidecar posts the transcript through the same transcript ingest endpoint with `mode=brainstorm`.
+---
 
-The Recall API key never lives on the desktop. The desktop app only uses `WORKER_URL` and `RECORDER_TRANSCRIBE_TOKEN` to call the cloud worker's upload-minting and `/transcribe` endpoints.
-Integration Connect also stays server-owned: the sidecar asks the hosted backend for a Relay/Nango OAuth URL and the native shell opens that URL in the user's default browser. The distributed app never shells out to `relayfile` and does not contain OAuth client secrets.
+## How it works
 
-Release builds are customer-zero-config: the signed app is compiled with the production worker URL, the production Recall API URL, and the design-partner shared recorder token. Local `.env` values still override those defaults for development and smoke tests.
+**Relayscribe has one job: transcribe.** It captures your meeting or brainstorm locally (no bot joins your call), sends the audio to the transcription backend, and drops the result into your Relay workspace at `/recall/recordings/<id>.json`.
 
-Release builds are customer-zero-config: the signed app is compiled with the production worker URL, the production Recall API URL, and the design-partner shared recorder token. Local `.env` values still override those defaults for development and smoke tests.
+**The proactive agent does everything else.** When the transcript lands, the listening agent persona fires — extracting action items, filing issues, opening PRs, writing to Notion, pinging Slack, or whatever flow you configure. Relayscribe is agnostic to all of it.
 
-## Downstream: meeting-actions and the factory pipeline
+```
+Meeting / brainstorm audio
+  └─ Relayscribe (this app) ──► /recall/recordings/<id>.json
+                                         │
+                                         ▼
+                               Proactive agent persona  ◄── you choose this
+                                         │
+                          ┌──────────────┼──────────────┐
+                          ▼              ▼              ▼
+                       Linear         GitHub          Slack
+                       Notion         GitLab        HubSpot
+                      (anything)    (anything)    (anything)
+```
 
-Relayscribe only produces transcripts; the work happens downstream. Once a transcript lands at `/recall/recordings/<id>.json` in the workspace relayfile mount, the `meeting-actions` persona (in `AgentWorkforce/agents/`) reads it, routes each item (Meeting mode → one Linear issue per action item; Brainstorm mode → one broader-scope issue), and posts a Slack digest. Each filed issue carries a recipe label (`agent:single` / `agent:team`) and the `source_language`. The factory then dispatches an agent (or team) per issue into the relay fleet and opens a PR. Relaycast handles placement; Relayscribe is unaware of any of it.
+**Meeting mode** — detects active meeting windows (Zoom, Teams, Google Meet, etc.) and records system audio via the Recall Desktop SDK.
 
-## Requirements
+**Brainstorm mode** — records your mic directly from the menu bar. Tap, speak, stop.
 
-- macOS 14+
-- Node.js 18+
-- Swift 5.9+
-- A stage/dev Relay backend with `RECORDER_TRANSCRIBE_TOKEN` configured if you are overriding the packaged defaults locally
+---
 
-## Configure
+## Privacy-first by design
 
-For local sidecar tests or development overrides, create `sidecar/.env`:
+The AI-notetaker category has a trust problem: meeting bots that announce themselves to the room, vendors that retain your audio indefinitely, and tools that train their models on your conversations by default. The result — [84% of professionals change how they speak when a bot is recording](https://basilai.app/articles/2026-05-11-ai-meeting-bots-chilling-effect-self-censorship-workplace-speech-on-device-privacy.html), and universities, law firms, and regulated industries are banning bot notetakers outright.
+
+Relayscribe takes the opposite posture:
+
+- **No bot ever joins your call.** Audio is captured locally from your own machine via the Recall Desktop SDK — nothing appears in the participant list, nothing announces itself, no one alters how they speak. Other attendees never know a notetaker is running.
+- **Recordings are never stored.** The audio file is deleted the moment its transcript is produced ([`recording-persistence.ts`](./sidecar/src/recording-persistence.ts) `unlink`s it on success). We keep the transcript, not the recording — there is no audio archive to leak, subpoena, or breach.
+- **Your transcripts live in your workspace.** They land in your own Relay workspace, which you control. Downstream routing (Linear, Notion, Slack, anything) is configured by you and goes only where you send it.
+- **No training on your data.** Your conversations are never used to train models — on any plan, not as a paid Enterprise add-on.
+- **First-party transcription.** Speech-to-text runs on our own model deployment (the National Library of Norway's NB-Whisper, Apache-2.0), not a grab-bag of third-party AI APIs with vendor keys that can leak.
+- **White-label & bring-your-own-backend.** We ship white-labeled builds for partners who want the recorder under their own brand, and the backend is yours to self-host — a viable path for regulated industries that cannot send audio to a shared cloud.
+
+---
+
+## Proactive agent personas
+
+The [`agents/`](./agents/) directory contains ready-to-deploy personas. Each one listens for the same transcript trigger and takes a different action. Deploy one, deploy several, or write your own.
+
+| Persona | Flow | Best for | Deploy |
+|---------|------|----------|--------|
+| [`transcript-to-linear-github`](./agents/transcript-to-linear-github/) | transcript → Linear issues → GitHub PRs | Engineering teams — coding tasks go all the way to a PR, autonomously | [![Launch Agent](https://agentrelay.com/launch-agent_small.svg)](https://agentrelay.com/cloud/deploy?persona=https://github.com/AgentWorkforce/relayscribe/blob/main/agents/transcript-to-linear-github/persona.ts) |
+| [`transcript-slack-digest`](./agents/transcript-slack-digest/) | transcript → Slack digest | Any team — lightweight, no issue tracker required | [![Launch Agent](https://agentrelay.com/launch-agent_small.svg)](https://agentrelay.com/cloud/deploy?persona=https://github.com/AgentWorkforce/relayscribe/blob/main/agents/transcript-slack-digest/persona.ts) |
+| [`transcript-to-notion-slack`](./agents/transcript-to-notion-slack/) | transcript → Notion page → Slack link | Product / ops teams who live in Notion | [![Launch Agent](https://agentrelay.com/launch-agent_small.svg)](https://agentrelay.com/cloud/deploy?persona=https://github.com/AgentWorkforce/relayscribe/blob/main/agents/transcript-to-notion-slack/persona.ts) |
+
+The personas are also listed in the [Agent Workforce registry](https://github.com/AgentWorkforce/agents). You can swap integrations (Linear → Jira, GitHub → GitLab, Slack → HubSpot) by writing a new persona — the `persona.ts` file is the only thing that changes.
+
+---
+
+## Language support
+
+Relayscribe uses a Whisper-based transcription backend with particularly strong Scandinavian dialect coverage — including spoken dialects that trip up most transcription services.
+
+### Norwegian
+- **Bokmål** — standard written Norwegian, eastern/urban speech
+- **Nynorsk** — western Norwegian written standard
+- **Sunnmøre** — Ålesund, Stranda, Ørsta, Volda (the Møre og Romsdal coastal dialects)
+- **Vestland** — Bergen (Bergensk), Sogning, Sunnfjord
+- **Trøndersk** — Trondheim and surrounding regions
+- **Nordnorsk** — Tromsø, Bodø, Lofoten
+- **Østlandsk** — Oslo-area and eastern valley dialects (Gudbrandsdal, Hedmark)
+- **Rogalandsk** — Stavanger and Jæren
+
+### Other Scandinavian
+- **Swedish** — Rikssvenska, Skånska, Göteborgska, Norrländska
+- **Danish** — standard Rigsdansk and Copenhagen speech
+- **Faroese**
+- **Icelandic**
+- **Finnish** — including Finland-Swedish (Finlandssvenska)
+
+### Other languages
+- **English**, **German**, **French**, **Spanish**, **Portuguese**, **Italian**, **Dutch**
+- **Japanese**, **Korean**, **Chinese (Mandarin and Cantonese)**
+- 90+ additional languages — if Whisper supports it, so does Relayscribe
+
+### Setting the language
+
+Relayscribe defaults to **Norwegian** (`no`) and routes to the National Library of
+Norway's NB-Whisper model — tuned across Norway's dialects. The language is a
+recorder setting; override it with the `RELAYSCRIBE_LANGUAGE` env var (BCP-47-ish
+code, or `auto` to let Whisper detect from audio):
 
 ```bash
-WORKER_URL=https://<transcription-worker-url>
-RECORDER_TRANSCRIBE_TOKEN=<shared desktop token>
-RECALL_API_URL=https://us-west-2.recall.ai
-RELAY_CONNECT_URL=https://<hosted-backend>/integrations/{provider}/connect
-TRANSCRIPTS_INGEST_URL=https://agentrelay.com/cloud/api/v1/webhooks/transcripts
+RELAYSCRIBE_LANGUAGE=sv   # Swedish → KB-Whisper (National Library of Sweden)
+RELAYSCRIBE_LANGUAGE=no   # Norwegian (default) → NB-Whisper
+RELAYSCRIBE_LANGUAGE=auto # detect per recording
 ```
 
-Do not commit `.env` files or tokens.
+The transcription backend maps each language to its best-fit model server-side,
+so setting the language is all that's needed — no per-language configuration in
+the app.
 
-Production release builds inject these defaults during GitHub Actions:
+---
 
-```bash
-WORKER_URL=https://transcription.agentrelay.com
-RECALL_API_URL=https://us-west-2.recall.ai
-RELAY_CONNECT_URL=https://transcription.agentrelay.com/integrations/{provider}/connect
-RECORDER_TRANSCRIBE_TOKEN=<from GitHub secret RECORDER_TRANSCRIBE_TOKEN>
-TRANSCRIPTS_INGEST_URL=https://agentrelay.com/cloud/api/v1/webhooks/transcripts
-```
+## Getting started
 
-The release workflow verifies `https://transcription.agentrelay.com/health` before compiling the sidecar. If the stable worker hostname is not deployed, the release fails rather than shipping a notarized app with a fragile generated URL.
+1. Download `AgentRelay.dmg` above, drag the app to Applications, and launch it.
+2. The app appears in your menu bar — click the icon to open it.
+3. Sign in to your Relay workspace from the Settings menu. This is required to unlock transcription.
+4. Connect your integrations (Slack, Linear, GitHub) from the Integrations menu.
+5. Relayscribe is now active. Meeting mode starts automatically when a supported meeting window is detected. Use Brainstorm mode to record on demand.
 
-## Build
+> Not a design partner yet? Email [hi@agentrelay.com](mailto:hi@agentrelay.com) to get access.
 
-```bash
-make sidecar-check
-make sidecar
-make test
-make dmg
-```
-
-Outputs:
-
-- `dist/Relayscribe.app`
-- `dist/Relayscribe.dmg`
-
-Launch the app:
-
-```bash
-open dist/Relayscribe.app
-```
-
-## Smoke Tests
-
-Sidecar HTTP lifecycle:
-
-```bash
-cd sidecar
-npm run test:e2e
-```
-
-Desktop-to-backend upload minting:
-
-```bash
-cd sidecar
-WORKER_URL=https://<transcription-worker-url> \
-RECORDER_TRANSCRIBE_TOKEN=<shared desktop token> \
-npm run test:create-upload
-```
-
-## Backend Contract
-
-The sidecar calls:
-
-```http
-POST <WORKER_URL>/recall/create-upload
-Authorization: Bearer <RECORDER_TRANSCRIBE_TOKEN>
-Content-Type: application/json
-
-{
-  "source": {
-    "relay_workspace_id": "rw_..."
-  }
-}
-```
-
-When no Relay workspace is signed in, the sidecar omits `source` entirely.
-
-The sidecar requires this response shape:
-
-```json
-{
-  "id": "sdk-upload-id",
-  "upload_token": "recall-upload-token"
-}
-```
-
-Recall also returns fields such as `recording_id`, `status`, `created_at`, and `metadata`; the desktop client ignores those extras.
-
-For Brainstorm mode, the native app calls:
-
-```http
-POST http://127.0.0.1:<sidecar-port>/brainstorm/upload
-Content-Type: multipart/form-data
-
-file=<audio/m4a>
-```
-
-The sidecar requires a signed-in Relay workspace before it transcribes. It then calls:
-
-```http
-POST <WORKER_URL>/transcribe
-Authorization: Bearer <RECORDER_TRANSCRIBE_TOKEN>
-Content-Type: audio/mp4
-```
-
-After transcription, the sidecar posts a granola-shaped note to `TRANSCRIPTS_INGEST_URL`:
-
-```json
-{
-  "id": "not_brainstorm1781510400000abcd1234",
-  "object": "note",
-  "title": "Brainstorm 2026-06-15",
-  "created_at": "2026-06-15T08:00:00.000Z",
-  "updated_at": null,
-  "web_url": "",
-  "participants": [],
-  "transcript_text": "Build the native brainstorm path.",
-  "summary_text": "Build the native brainstorm path.",
-  "mode": "brainstorm",
-  "source": {
-    "provider": "recall",
-    "type": "relayscribe",
-    "mode": "brainstorm",
-    "recording_id": "brainstorm-1781510400000-abcd1234",
-    "bot_id": null,
-    "relay_workspace_id": "rw_..."
-  },
-  "metadata": {
-    "capture": "native-mic",
-    "client": "relayscribe",
-    "version": "1.3.0"
-  }
-}
-```
-
-For integration OAuth, the sidecar calls:
-
-```http
-POST <RELAY_CONNECT_URL>
-Authorization: Bearer <RECORDER_TRANSCRIBE_TOKEN>
-Content-Type: application/json
-
-{
-  "provider": "slack",
-  "integration": "slack",
-  "allowedIntegrations": ["slack-relay"],
-  "requestedBackend": "nango",
-  "source": "relayscribe"
-}
-```
-
-`{provider}` in `RELAY_CONNECT_URL` is replaced with `slack`, `linear`, or `github`. If `RELAY_CONNECT_URL` is not set, the sidecar falls back to `<WORKER_URL>/integrations/{provider}/connect`.
-
-The hosted endpoint must create the Nango/Relay connect session server-side and return one of `authUrl`, `connectLink`, `connectUrl`, or `url` with an `http` or `https` URL. Optional `sessionId`, `sessionToken`, `token`, or `connectionId` fields are passed through for diagnostics.
-
-## Project Layout
-
-```text
-Relayscribe/
-  AppBundle/Info.plist       macOS app bundle metadata
-  Main/                      executable entry point
-  Sources/                   SwiftUI app, sidecar process manager, state store
-  Tests/                     Swift tests
-sidecar/
-  src/server.ts              Hono server and Recall Desktop SDK integration
-  scripts/test-create-upload.ts
-  scripts/test-sidecar-e2e.sh
-Makefile                     sidecar, Swift, .app, and .dmg build targets
-```
-
-## Notes
-
-- The packaged app embeds the compiled sidecar under `Contents/Resources/sidecar`.
-- `SidecarManager` launches the sidecar with that directory as the working directory, so `.env` files can still override the compiled defaults during development or support diagnostics.
-- `LSUIElement` is enabled in `Info.plist`, so the app appears in the menu bar rather than the Dock.

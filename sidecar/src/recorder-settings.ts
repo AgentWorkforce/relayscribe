@@ -8,11 +8,18 @@ export interface AutomationSettings {
 
 export interface RecorderSettings {
   mode: RecorderMode;
+  // BCP-47-ish language hint forwarded to the transcription worker, which maps
+  // it to the right national-library model (no→NB-Whisper, sv→KB-Whisper, …).
+  // Defaults to Norwegian. 'auto' lets Whisper detect the language from audio.
+  language: string;
   automation_settings: AutomationSettings;
 }
 
+export const DEFAULT_LANGUAGE = 'no';
+
 export const DEFAULT_SETTINGS: RecorderSettings = {
   mode: 'brainstorm',
+  language: DEFAULT_LANGUAGE,
   automation_settings: {
     create_linear_issues: false,
     create_github_issues: false,
@@ -29,6 +36,12 @@ export function normalizeMode(raw: unknown): RecorderMode {
   return raw === 'meeting' ? 'meeting' : DEFAULT_SETTINGS.mode;
 }
 
+export function normalizeLanguage(raw: unknown): string {
+  if (typeof raw !== 'string') return DEFAULT_LANGUAGE;
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed || DEFAULT_LANGUAGE;
+}
+
 export function normalizeAutomationSettings(raw: unknown): AutomationSettings {
   const input = raw && typeof raw === 'object' ? (raw as Partial<AutomationSettings>) : {};
   return {
@@ -42,6 +55,7 @@ export function normalizeRecorderSettings(raw: unknown): RecorderSettings {
   const input = raw && typeof raw === 'object' ? (raw as Partial<RecorderSettings>) : {};
   return {
     mode: normalizeMode(input.mode),
+    language: normalizeLanguage(input.language),
     automation_settings: normalizeAutomationSettings(input.automation_settings),
   };
 }
