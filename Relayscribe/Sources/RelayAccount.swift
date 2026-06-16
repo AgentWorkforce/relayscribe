@@ -46,6 +46,15 @@ final class RelayAccount {
     }
 
     private(set) var credential: Credential?
+
+    /// The signed-in credential mapped to the shape the sidecar needs
+    /// (access token + workspace + cloud API base). nil when signed out.
+    var workspaceCredential: WorkspaceCredential? {
+        credential.map {
+            WorkspaceCredential(accessToken: $0.accessToken, workspaceId: $0.workspaceId, apiURL: $0.apiURL)
+        }
+    }
+
     var signInStatus: SignInStatus = .idle
     /// Transient result of a user-initiated connect action (per provider).
     var integrationStates: [RelayIntegrationProvider: RelayIntegrationState] = [:]

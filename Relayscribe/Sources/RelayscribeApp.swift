@@ -8,7 +8,6 @@ public struct RelayscribeApp: App {
     @State private var sidecar = SidecarManager()
     @State private var settings = RecorderSettings()
     @State private var account = RelayAccount()
-    @State private var credential: WorkspaceCredential? = CredentialStore.load()
 
     public init() {}
 
@@ -19,8 +18,8 @@ public struct RelayscribeApp: App {
                 .environment(sidecar)
                 .environment(settings)
                 .environment(account)
-                .onChange(of: credential) { _, newValue in
-                    sidecar.setWorkspaceCredential(newValue)
+                .onChange(of: account.credential) {
+                    sidecar.setWorkspaceCredential(account.workspaceCredential)
                 }
                 .onChange(of: account.credential?.workspaceId) {
                     sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
@@ -55,7 +54,7 @@ public struct RelayscribeApp: App {
     }
 
     private func startSidecar() async {
-        sidecar.setWorkspaceCredential(credential)
+        sidecar.setWorkspaceCredential(account.workspaceCredential)
         sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
         await sidecar.ensureRunning()
         if case .running = sidecar.state {
