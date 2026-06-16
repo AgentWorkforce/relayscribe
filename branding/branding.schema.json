@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Relayscribe brand config",
+  "description": "Presentation-only white-label config. Cannot change recorder behavior, the sidecar contract, or the build — only the product name, icon, bundle id, and consent copy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "productName", "shortName", "appId", "supportUrl", "icon", "consent"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Brand slug (kebab-case). Used for build.env output dir and DMG naming."
+    },
+    "productName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Full product name — window titles, menus, About box, DMG, Info.plist CFBundleDisplayName."
+    },
+    "shortName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Short brand name used in status copy, e.g. \"Sent to <shortName>\"."
+    },
+    "appId": {
+      "type": "string",
+      "pattern": "^[a-z0-9.-]+$",
+      "description": "Reverse-DNS bundle identifier, unique per brand (Info.plist CFBundleIdentifier + Brand.swift)."
+    },
+    "supportUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Support URL surfaced in the app."
+    },
+    "icon": {
+      "type": "string",
+      "description": "Path to the brand icon SVG, resolved relative to this brand file. Rasterized to icon.icns at build time."
+    },
+    "consent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["microphone", "screenCapture", "appleEvents"],
+      "description": "macOS permission prompt copy → Info.plist NS*UsageDescription.",
+      "properties": {
+        "microphone": { "type": "string", "minLength": 1 },
+        "screenCapture": { "type": "string", "minLength": 1 },
+        "appleEvents": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

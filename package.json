@@ -1,0 +1,11 @@
+{
+  "name": "relayscribe",
+  "version": "1.3.0",
+  "description": "Native Swift macOS meeting recorder (Relay) — Recall Desktop SDK capture + TypeScript sidecar, no bot joins",
+  "private": true,
+  "scripts": {
+    "icons:macos": "node scripts/generate-macos-icons.mjs",
+    "branding:apply": "node branding/lib/apply-branding.mjs",
+    "branding:verify": "node branding/lib/verify-branding.mjs"
+  }
+}

@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relay Runtime UI</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101113;
+      --panel: #191b1f;
+      --panel-2: #20232a;
+      --line: #343842;
+      --text: #f2f4f8;
+      --muted: #a8afbd;
+      --accent: #48c78e;
+      --danger: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    main {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0;
+    }
+    header {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 22px;
+    }
+    input, button {
+      height: 40px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 6px;
+      font: inherit;
+    }
+    input {
+      min-width: 0;
+      padding: 0 12px;
+      outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+    button {
+      padding: 0 14px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #08120d;
+      font-weight: 650;
+    }
+    button:disabled {
+      color: #717987;
+      cursor: not-allowed;
+      background: #15171b;
+      border-color: #272b33;
+    }
+    #message {
+      min-height: 22px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    #message.error { color: var(--danger); }
+    #surface {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+      align-items: start;
+    }
+    section.widget {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 78px;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 6px;
+      text-align: left;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    tr.selectable { cursor: pointer; }
+    tr.selected { background: var(--panel-2); }
+    svg {
+      display: block;
+      width: 100%;
+      min-height: 220px;
+    }
+    .bar-label, .bar-value {
+      fill: var(--muted);
+      font-size: 12px;
+    }
+    .empty {
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      color: var(--muted);
+      text-align: center;
+    }
+    @media (max-width: 720px) {
+      header { grid-template-columns: 1fr; }
+      input, button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <input id="request" maxlength="500" placeholder="Describe a feature..." autocomplete="off">
+      <button id="generate" class="primary" type="button">Generate</button>
+      <button id="reset" type="button">Reset</button>
+    </header>
+    <div id="message" role="status"></div>
+    <div id="surface"></div>
+  </main>
+  <script>
+    const capabilities = {
+      "data.recordings": { method: "GET", path: "/recordings" },
+      "data.transcript": { method: "GET", path: "/recordings/transcript" },
+      "data.transcriptSearch": { method: "GET", path: "/recordings/search" },
+      "recorder.status": { method: "GET", path: "/status" }
+    };
+    const state = { spec: null, selection: null, filters: {}, cache: new Map() };
+    const surface = document.getElementById("surface");
+    const message = document.getElementById("message");
+    const requestInput = document.getElementById("request");
+    const generateButton = document.getElementById("generate");
+    const resetButton = document.getElementById("reset");
+    const svgNs = "http://www.w3.org/2000/svg";
+
+    function setMessage(text, isError = false) {
+      message.textContent = text;
+      message.className = isError ? "error" : "";
+    }
+
+    function el(tag, className) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      return node;
+    }
+
+    function svgEl(tag) {
+      return document.createElementNS(svgNs, tag);
+    }
+
+    function capabilityUrl(capability, params = {}) {
+      const entry = capabilities[capability];
+      if (!entry) throw new Error("Unknown capability");
+      const url = new URL(entry.path, window.location.origin);
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
+      }
+      return url.toString();
+    }
+
+    function resolveParams(params = {}) {
+      const out = {};
+      for (const [key, value] of Object.entries(params)) {
+        if (typeof value === "string" && value.startsWith("$selection.")) {
+          const field = value.slice("$selection.".length);
+          if (!state.selection || state.selection[field] === undefined) return null;
+          out[key] = state.selection[field];
+        } else if (typeof value === "string" && value.startsWith("$filter.")) {
+          const field = value.slice("$filter.".length);
+          out[key] = state.filters[field] || "";
+        } else {
+          out[key] = value;
+        }
+      }
+      return out;
+    }
+
+    async function fetchCapability(data) {
+      const params = resolveParams(data.params);
+      if (params === null) return null;
+      const key = `${data.capability}:${JSON.stringify(params)}`;
+      if (state.cache.has(key)) return state.cache.get(key);
+      const res = await fetch(capabilityUrl(data.capability, params));
+      if (!res.ok) throw new Error(`Capability ${data.capability} failed`);
+      const payload = await res.json();
+      state.cache.set(key, payload);
+      return payload;
+    }
+
+    async function loadSpec() {
+      const res = await fetch("/ui/spec");
+      if (!res.ok) throw new Error("Could not load UI spec");
+      state.spec = await res.json();
+      state.cache.clear();
+      await render();
+    }
+
+    function section(title) {
+      const node = el("section", "widget");
+      if (title) {
+        const heading = el("h2");
+        heading.textContent = title;
+        node.appendChild(heading);
+      }
+      return node;
+    }
+
+    async function renderList(component, host) {
+      const data = await fetchCapability(component.data);
+      if (data === null) {
+        const empty = el("p");
+        empty.textContent = "Select a recording first.";
+        host.appendChild(empty);
+        return;
+      }
+      if (!Array.isArray(data) || data.length === 0) {
+        const empty = el("p");
+        empty.textContent = "No matching data found.";
+        host.appendChild(empty);
+        return;
+      }
+      const transcriptRows = data.some((row) => row && typeof row === "object" && "text" in row);
+      const columns = transcriptRows
+        ? [
+            ["sessionId", "Session"],
+            ["speaker", "Speaker"],
+            ["timestamp", "Time"],
+            ["text", "Text"]
+          ]
+        : [
+            ["sessionId", "Session"],
+            ["createdAt", "Created"],
+            ["turns", "Turns"]
+          ];
+      const table = el("table");
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      columns.forEach(([, label]) => {
+        const cell = document.createElement("th");
+        cell.textContent = label;
+        headRow.appendChild(cell);
+      });
+      head.appendChild(headRow);
+      table.appendChild(head);
+      const body = document.createElement("tbody");
+      data.forEach((recording) => {
+        const row = document.createElement("tr");
+        if (component.selectable) row.className = "selectable";
+        if (state.selection && state.selection.sessionId === recording.sessionId) row.classList.add("selected");
+        columns.forEach(([key]) => {
+          const cell = document.createElement("td");
+          const value = key === "createdAt" && recording[key] ? new Date(recording[key]).toLocaleString() : recording[key];
+          cell.textContent = String(value);
+          row.appendChild(cell);
+        });
+        row.addEventListener("click", async () => {
+          if (!component.selectable) return;
+          state.selection = recording;
+          await render();
+        });
+        body.appendChild(row);
+      });
+      table.appendChild(body);
+      host.appendChild(table);
+    }
+
+    function weekKey(date) {
+      const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+      const day = d.getUTCDay() || 7;
+      d.setUTCDate(d.getUTCDate() + 4 - day);
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+      return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+    }
+
+    function bucketRecordings(data, derive) {
+      const buckets = new Map();
+      data.forEach((recording) => {
+        const date = new Date(recording.createdAt);
+        const key = derive === "frequency.day" ? date.toISOString().slice(0, 10) : weekKey(date);
+        buckets.set(key, (buckets.get(key) || 0) + 1);
+      });
+      return [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b));
+    }
+
+    async function renderChart(component, host) {
+      const data = await fetchCapability(component.data);
+      const buckets = bucketRecordings(Array.isArray(data) ? data : [], component.data.derive);
+      if (buckets.length === 0) {
+        const empty = el("p");
+        empty.textContent = "No chart data available.";
+        host.appendChild(empty);
+        return;
+      }
+      const width = 640;
+      const height = 240;
+      const margin = { top: 18, right: 16, bottom: 42, left: 34 };
+      const max = Math.max(...buckets.map(([, value]) => value), 1);
+      const svg = svgEl("svg");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      buckets.forEach(([label, value], index) => {
+        const plotWidth = width - margin.left - margin.right;
+        const barWidth = Math.max(10, plotWidth / buckets.length - 10);
+        const x = margin.left + index * (plotWidth / buckets.length) + 5;
+        const barHeight = ((height - margin.top - margin.bottom) * value) / max;
+        const y = height - margin.bottom - barHeight;
+        const rect = svgEl("rect");
+        rect.setAttribute("x", String(x));
+        rect.setAttribute("y", String(y));
+        rect.setAttribute("width", String(barWidth));
+        rect.setAttribute("height", String(barHeight));
+        rect.setAttribute("rx", "3");
+        rect.setAttribute("fill", "#48c78e");
+        svg.appendChild(rect);
+        const valueLabel = svgEl("text");
+        valueLabel.setAttribute("x", String(x + barWidth / 2));
+        valueLabel.setAttribute("y", String(y - 6));
+        valueLabel.setAttribute("text-anchor", "middle");
+        valueLabel.setAttribute("class", "bar-value");
+        valueLabel.textContent = String(value);
+        svg.appendChild(valueLabel);
+        const xLabel = svgEl("text");
+        xLabel.setAttribute("x", String(x + barWidth / 2));
+        xLabel.setAttribute("y", String(height - 15));
+        xLabel.setAttribute("text-anchor", "middle");
+        xLabel.setAttribute("class", "bar-label");
+        xLabel.textContent = label;
+        svg.appendChild(xLabel);
+      });
+      host.appendChild(svg);
+    }
+
+    async function runAction(action) {
+      const params = resolveParams(action.params);
+      if (!params) {
+        setMessage("Select a recording first.", true);
+        return;
+      }
+      const res = await fetch(capabilityUrl(action.capability, params));
+      setMessage(res.ok ? "Action completed." : "Action failed.", !res.ok);
+    }
+
+    async function renderComponent(component) {
+      const host = section(component.title || component.label || "");
+      if (component.type === "list") await renderList(component, host);
+      if (component.type === "chart") await renderChart(component, host);
+      if (component.type === "button") {
+        const button = el("button", "primary");
+        button.textContent = component.label || "Run";
+        button.disabled = resolveParams(component.action.params) === null;
+        button.addEventListener("click", () => runAction(component.action));
+        host.appendChild(button);
+      }
+      if (component.type === "text") {
+        const p = el("p");
+        p.textContent = component.text || "";
+        host.appendChild(p);
+      }
+      if (component.type === "filter") {
+        const input = el("input");
+        input.placeholder = component.label || component.field || "Filter";
+        input.value = state.filters[component.field] || "";
+        input.addEventListener("input", async () => {
+          state.filters[component.field] = input.value;
+          state.cache.clear();
+          await render();
+        });
+        host.appendChild(input);
+      }
+      return host;
+    }
+
+    async function render() {
+      surface.replaceChildren();
+      const components = state.spec && Array.isArray(state.spec.components) ? state.spec.components : [];
+      if (components.length === 0) {
+        const empty = el("div", "empty");
+        empty.textContent = "Generated widgets appear here.";
+        surface.appendChild(empty);
+        return;
+      }
+      for (const component of components) {
+        try {
+          surface.appendChild(await renderComponent(component));
+        } catch (err) {
+          const host = section(component.title || component.label || component.id);
+          const p = el("p");
+          p.textContent = err instanceof Error ? err.message : "Component failed.";
+          host.appendChild(p);
+          surface.appendChild(host);
+        }
+      }
+    }
+
+    generateButton.addEventListener("click", async () => {
+      const request = requestInput.value.trim();
+      if (!request) return;
+      generateButton.disabled = true;
+      setMessage("Generating...");
+      try {
+        const res = await fetch("/ui/generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ request })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setMessage(body.reason || body.error || "Generation failed.", true);
+          return;
+        }
+        requestInput.value = "";
+        state.spec = body;
+        state.cache.clear();
+        setMessage("Feature added.");
+        await render();
+      } finally {
+        generateButton.disabled = false;
+      }
+    });
+
+    resetButton.addEventListener("click", async () => {
+      await fetch("/ui/spec", { method: "DELETE" });
+      state.selection = null;
+      setMessage("Reset.");
+      await loadSpec();
+    });
+
+    requestInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") generateButton.click();
+    });
+
+    loadSpec().catch((err) => setMessage(err instanceof Error ? err.message : "Could not load UI.", true));
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+# White-label generated branding output (reproducible from branding/brands/*)
+branding/.generated/
+*.dmg
+*.app
+out/
+release/
+build/mac*/
+memory/
+sidecar/.claude/
+sidecar/demo-output/
+# Swift build artifacts
+Relayscribe/.build/
+*.xcworkspace
+*.xcodeproj
+
+# Generated icons (reproducible from branding/assets/<brand>/icon.svg)
+assets/icon.png
+assets/icon.icns
+Relayscribe/AppBundle/Resources/icon.icns

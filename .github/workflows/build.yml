@@ -1,0 +1,119 @@
+name: Build (unsigned)
+
+# Brand-neutral CI build for the relayscribe base. Builds the sidecar + the
+# native Swift app for a given brand and produces an UNSIGNED .app/.dmg. No
+# secrets required, so it runs on forks. Signed/notarized distribution is done
+# by white-label overlays (e.g. a downstream overlay) that own the certificates.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: "Brand id under branding/brands/ (default relayscribe)"
+        required: false
+        default: "relayscribe"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      BRAND: ${{ github.event.inputs.brand || 'relayscribe' }}
+      APP_EXECUTABLE: Relayscribe
+      APP_BUNDLE_PATH: build/app/Relayscribe.app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sidecar/package-lock.json
+
+      - name: Install sidecar dependencies
+        working-directory: sidecar
+        run: npm ci
+
+      - name: Install icon tooling
+        run: command -v rsvg-convert >/dev/null || brew install librsvg
+
+      - name: Verify brand configs
+        run: npm run branding:verify
+
+      - name: Apply brand
+        run: npm run branding:apply -- --brand "${BRAND}"
+
+      - name: Load brand build vars
+        run: cat "branding/.generated/${BRAND}/build.env" >> "$GITHUB_ENV"
+
+      - name: Provision Recall Desktop SDK
+        working-directory: sidecar/node_modules/@recallai/desktop-sdk
+        run: node setup.js
+
+      - name: Build sidecar
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+          npm run build
+          grep -q 'relayscribe-sidecar' dist/server.js
+          grep -q '/ui/generate' dist/server.js
+
+      - name: Test Swift package
+        working-directory: Relayscribe
+        run: swift test
+
+      - name: Build Swift app
+        working-directory: Relayscribe
+        run: swift build -c release
+
+      - name: Assemble .app bundle
+        run: |
+          set -euo pipefail
+          APP_CONTENTS="${APP_BUNDLE_PATH}/Contents"
+          SIDECAR_BUNDLE="${APP_CONTENTS}/Resources/sidecar"
+
+          rm -rf "${APP_BUNDLE_PATH}"
+          mkdir -p "${APP_CONTENTS}/MacOS" "${APP_CONTENTS}/Resources" \
+                   "${SIDECAR_BUNDLE}/dist" "${SIDECAR_BUNDLE}/node_modules"
+
+          cp Relayscribe/AppBundle/Info.plist "${APP_CONTENTS}/Info.plist"
+          cp Relayscribe/AppBundle/Resources/icon.icns "${APP_CONTENTS}/Resources/icon.icns"
+          cp "Relayscribe/.build/release/${APP_EXECUTABLE}" "${APP_CONTENTS}/MacOS/${APP_EXECUTABLE}"
+          chmod +x "${APP_CONTENTS}/MacOS/${APP_EXECUTABLE}"
+
+          cp -R sidecar/dist/. "${SIDECAR_BUNDLE}/dist/"
+          cp -R sidecar/node_modules/. "${SIDECAR_BUNDLE}/node_modules/"
+          cp sidecar/package.json "${SIDECAR_BUNDLE}/"
+          cp "$(command -v node)" "${APP_CONTENTS}/MacOS/sidecar-node"
+          chmod +x "${APP_CONTENTS}/MacOS/sidecar-node"
+          echo -n "APPL????" > "${APP_CONTENTS}/PkgInfo"
+
+          plutil -lint "${APP_CONTENTS}/Info.plist"
+
+      - name: Create unsigned DMG
+        run: |
+          set -euo pipefail
+          rm -rf build/dmg-stage && mkdir -p build/dmg-stage
+          cp -R "${APP_BUNDLE_PATH}" "build/dmg-stage/${APP_NAME}.app"
+          ln -s /Applications build/dmg-stage/Applications
+          hdiutil create -volname "${APP_NAME}" -srcfolder build/dmg-stage \
+            -ov -format UDZO "build/${DMG_NAME}"
+
+      - name: Upload unsigned build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BRAND }}-unsigned-${{ github.run_id }}
+          path: build/${{ env.DMG_NAME }}
+          if-no-files-found: error
+          retention-days: 14

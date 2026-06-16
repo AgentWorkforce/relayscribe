@@ -1,0 +1,31 @@
+{
+  "name": "relayscribe-sidecar",
+  "version": "1.3.0",
+  "private": true,
+  "description": "TS sidecar for Relayscribe — runs Recall Desktop SDK, bridges to Swift native shell",
+  "main": "dist/server.js",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc --noEmit && tsc -p tsconfig.build.json && npm run copy-public",
+    "copy-public": "mkdir -p dist/public && cp public/ui.html public/bridge.js dist/public/",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts",
+    "demo:ui-live": "bash scripts/live-ui-demo.sh",
+    "test:create-upload": "tsx scripts/test-create-upload.ts",
+    "test:e2e": "bash scripts/test-sidecar-e2e.sh"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.12.0",
+    "@recallai/desktop-sdk": "2.0.18",
+    "dotenv": "^16.4.5",
+    "hono": "^4.4.0",
+    "@agent-relay/harness-driver": "^8.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0"
+  }
+}
