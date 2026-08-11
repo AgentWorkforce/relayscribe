@@ -232,16 +232,22 @@ jobs:
           # Scan the built sidecar bundle for high-entropy strings that look like
           # secrets. A 64-char hex string or a token matching cld_* anywhere in the
           # JS bundle should fail the build.
+          #
+          # NOTE: python3 instead of grep -P — macOS runners ship BSD grep which
+          # does not recognise -P (Perl regex) and exits 2; combined with 2>/dev/null
+          # the gate would silently always pass.  python3 ships on all macOS runners.
           SIDECAR_JS="${APP_BUNDLE_PATH}/Contents/Resources/sidecar/dist/server.js"
-          if grep -qP '(?<![A-Za-z0-9_])[0-9a-f]{64}(?![A-Za-z0-9_])' "${SIDECAR_JS}" 2>/dev/null; then
-            echo "ENTROPY GATE FAILED: 64-char hex string found in sidecar bundle" >&2
-            exit 1
-          fi
-          if grep -qP 'cld_[A-Za-z0-9]{40,}' "${SIDECAR_JS}" 2>/dev/null; then
-            echo "ENTROPY GATE FAILED: Relay token pattern found in sidecar bundle" >&2
-            exit 1
-          fi
-          echo "Entropy gate passed."
+          python3 - "${SIDECAR_JS}" <<'PYEOF'
+import re, sys
+content = open(sys.argv[1]).read()
+if re.search(r'(?<![A-Za-z0-9_])[0-9a-f]{64}(?![A-Za-z0-9_])', content):
+    sys.stderr.write('ENTROPY GATE FAILED: 64-char hex string found in sidecar bundle\n')
+    sys.exit(1)
+if re.search(r'cld_[A-Za-z0-9]{40,}', content):
+    sys.stderr.write('ENTROPY GATE FAILED: Relay token pattern found in sidecar bundle\n')
+    sys.exit(1)
+print('Entropy gate passed.')
+PYEOF
 
       - name: Import code signing certificate
         env:
