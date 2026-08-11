@@ -331,7 +331,7 @@ can act on.
 | `401 reason: expired` | Park as `needs-auth`, no retry consumed, ask app to refresh | Nothing — the app refreshes and the recording drains automatically |
 | `401 reason: revoked` | Park as `needs-auth`, no retry consumed | "Your Relay session expired. Please sign in again." |
 | `401 reason: insufficient_scope` | Park, do not retry, log loudly | "This account isn't enabled for transcription. Contact support." |
-| `503` Modal unavailable | Retry with existing backoff | "Transcription is temporarily unavailable — we'll retry automatically." |
+| `503` Model unavailable | Retry with existing backoff | "Transcription is temporarily unavailable — we'll retry automatically." |
 | `5xx` other | Retry with existing backoff, up to `MAX_RETRIES` | Only surfaced after retries are exhausted |
 
 **Invariant.** A recording is never deleted while its transcript has not been
