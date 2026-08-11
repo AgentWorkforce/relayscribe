@@ -720,8 +720,19 @@ async function drainNeedsAuthRecordings(): Promise<void> {
     return;
   }
   if (parked.length === 0) return;
-  console.log(`[drain] draining ${parked.length} needs-auth recording(s) after credential refresh`);
-  for (const entry of parked) {
+  // Only drain entries that belong to the current workspace credential.  Entries
+  // for a different workspace stay parked — they'll drain when the matching
+  // credential is presented.  Entries with no relayWorkspaceId are drained
+  // unconditionally (legacy / single-workspace deployments).
+  const currentWorkspaceId = runtimeCredential.workspaceId;
+  const todrain = parked.filter(entry =>
+    !entry.relayWorkspaceId ||
+    !currentWorkspaceId ||
+    entry.relayWorkspaceId === currentWorkspaceId,
+  );
+  const skipped = parked.length - todrain.length;
+  console.log(`[drain] draining ${todrain.length} needs-auth recording(s) after credential refresh${skipped > 0 ? ` (${skipped} skipped: different workspace)` : ''}`);
+  for (const entry of todrain) {
     await markPendingFromNeedsAuth(entry.id).catch(() => {});
   }
   // Pick them up immediately via the retry queue

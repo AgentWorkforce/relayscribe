@@ -74,6 +74,14 @@ public struct RelayscribeApp: App {
         await sidecar.ensureRunning()
         if case .running = sidecar.state {
             store.onSidecarReady(settings: settings)
+            // Re-push the credential now that the sidecar is live.
+            // setWorkspaceCredential was called before ensureRunning() so
+            // syncRelayAuthToken never fired (sidecar wasn't up yet).  Pushing
+            // here ensures needs-auth recordings parked in a prior session are
+            // drained immediately on relaunch when the user is already signed in.
+            if let cred = account.workspaceCredential {
+                await sidecar.pushWorkspaceCredential(cred)
+            }
         }
     }
 }
