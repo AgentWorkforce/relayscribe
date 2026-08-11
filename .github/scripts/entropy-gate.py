@@ -18,6 +18,22 @@ import re
 import sys
 
 
+def _line_col(content: str, pos: int):
+    """Return (1-based line, 1-based col) for a byte offset in content."""
+    before = content[:pos]
+    line = before.count('\n') + 1
+    col = pos - before.rfind('\n')
+    return line, col
+
+
+def _excerpt(match_text: str, max_len: int = 32) -> str:
+    """Return a safely truncated, non-printable-redacted excerpt."""
+    s = match_text[:max_len]
+    if len(match_text) > max_len:
+        s += '…'
+    return s
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         sys.stderr.write("usage: entropy-gate.py <path>\n")
@@ -30,12 +46,23 @@ def main() -> int:
         sys.stderr.write(f"entropy-gate: cannot open {path}: {exc}\n")
         return 2
 
-    if re.search(r'(?<![A-Za-z0-9_])[0-9a-f]{64}(?![A-Za-z0-9_])', content):
-        sys.stderr.write("ENTROPY GATE FAILED: 64-char hex string found in sidecar bundle\n")
+    m = re.search(r'(?<![A-Za-z0-9_])[0-9a-f]{64}(?![A-Za-z0-9_])', content)
+    if m:
+        line, col = _line_col(content, m.start())
+        sys.stderr.write(
+            f"ENTROPY GATE FAILED: 64-char hex string at {path}:{line}:{col}\n"
+            f"  matched: {_excerpt(m.group())}\n"
+            f"  (may be a SHA-256 digest — inspect manually and add an allowlist entry if benign)\n"
+        )
         return 1
 
-    if re.search(r'cld_[A-Za-z0-9]{40,}', content):
-        sys.stderr.write("ENTROPY GATE FAILED: Relay token pattern found in sidecar bundle\n")
+    m = re.search(r'cld_[A-Za-z0-9]{40,}', content)
+    if m:
+        line, col = _line_col(content, m.start())
+        sys.stderr.write(
+            f"ENTROPY GATE FAILED: Relay token pattern at {path}:{line}:{col}\n"
+            f"  matched: {_excerpt(m.group())}\n"
+        )
         return 1
 
     print("Entropy gate passed.")

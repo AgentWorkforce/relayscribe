@@ -708,9 +708,11 @@ async function retryFailedRecordings(): Promise<void> {
       await markTranscribed(entry.id);
       console.log(`[retry] success id=${entry.id}`);
     } catch (err) {
-      if (err instanceof BrainstormPipelineError && err.code === 'transcribe_auth_failed') {
+      // missing_token (sidecar started before sign-in) is also an auth failure
+      if (err instanceof BrainstormPipelineError &&
+          (err.code === 'transcribe_auth_failed' || err.code === 'missing_token')) {
         await markNeedsAuth(entry.id).catch(() => {});
-        console.warn(`[retry] auth failure id=${entry.id} reason=${err.authReason ?? 'unknown'} — parking needs-auth`);
+        console.warn(`[retry] auth failure id=${entry.id} code=${err.code} reason=${err.authReason ?? 'unknown'} — parking needs-auth`);
       } else {
         await markFailed(entry.id).catch(() => {});
         console.error(`[retry] failed id=${entry.id}:`, err instanceof Error ? err.message : err);
@@ -752,8 +754,14 @@ async function drainNeedsAuthRecordings(): Promise<void> {
 }
 
 function startRetryQueue(): void {
-  // Run once on startup to catch recordings that failed in a previous session
-  void retryFailedRecordings();
+  // Run once on startup to catch recordings that failed in a previous session.
+  // After the initial retry batch completes, run drainNeedsAuthRecordings() so
+  // entries that 401'd during startup retry (and transitioned to needs-auth) are
+  // drained immediately if a credential is already available, rather than
+  // waiting until the next POST /relay/auth-token.  Safe if the credential is
+  // expired: markNeedsAuth rolls back the retryCount, and pushWorkspaceCredential
+  // from the Swift app will drain them again with the fresh token.
+  void retryFailedRecordings().then(() => drainNeedsAuthRecordings()).catch(() => {});
   setInterval(() => { void retryFailedRecordings(); }, RETRY_INTERVAL_MS);
 }
 

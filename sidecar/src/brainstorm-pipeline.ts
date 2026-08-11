@@ -260,7 +260,10 @@ export async function runBrainstormPipelineWithPersistence(
     return result;
   } catch (err) {
     if (persistenceId) {
-      const isAuthError = err instanceof BrainstormPipelineError && err.code === 'transcribe_auth_failed';
+      // missing_token (no credential at all) is also an auth failure — park without
+      // consuming a retry so the recording drains when a credential arrives.
+      const isAuthError = err instanceof BrainstormPipelineError &&
+        (err.code === 'transcribe_auth_failed' || err.code === 'missing_token');
       if (isAuthError && store.markNeedsAuth) {
         await store.markNeedsAuth(persistenceId).catch((e: unknown) => {
           console.warn('[pipeline] markNeedsAuth failed:', e instanceof Error ? e.message : e);
