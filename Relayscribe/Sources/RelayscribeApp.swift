@@ -27,7 +27,7 @@ public struct RelayscribeApp: App {
         } label: {
             // The label is always rendered (the menu-bar icon), so this runs at
             // launch — start the sidecar here, not on the lazy .window content.
-            MenuBarLabel(status: store.effectiveMenuStatus(mode: settings.mode))
+            MenuBarLabel(status: store.effectiveMenuStatus(mode: settings.mode), authState: store.authState)
                 .task(id: "startup", priority: .userInitiated) {
                     await startSidecar()
                 }
@@ -61,9 +61,34 @@ public struct RelayscribeApp: App {
     private func startSidecar() async {
         sidecar.setWorkspaceCredential(account.workspaceCredential)
         sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
+        // Wire credential refresh callbacks so stopBrainstormRecording() always
+        // sends a fresh token before uploading (covers 22-hour uptime token expiry).
+        store.credentialProvider = { [account] in try await account.validWorkspaceCredential() }
+        // Use pushWorkspaceCredential (not setWorkspaceCredential) so the sidecar
+        // HTTP sync is awaited before the callback returns.  RecordingStore calls
+        // this callback and immediately starts the upload on the next line — the
+        // sidecar must have the new token in place before that request lands.
+        store.onCredentialRefreshed = { [sidecar] credential in
+            await sidecar.pushWorkspaceCredential(credential)
+        }
         await sidecar.ensureRunning()
         if case .running = sidecar.state {
             store.onSidecarReady(settings: settings)
+            // Re-push the credential now that the sidecar is live.
+            // setWorkspaceCredential was called before ensureRunning() so
+            // syncRelayAuthToken never fired (sidecar wasn't up yet).  Pushing
+            // here ensures needs-auth recordings parked in a prior session are
+            // drained immediately on relaunch when the user is already signed in.
+            //
+            // Use validWorkspaceCredential() (not the raw stored credential) so
+            // the drain fires with a fresh access token — on a ~22h relaunch the
+            // stored token may be expired and would immediately re-park every
+            // recording it drains.  Skip the startup drain if refresh fails
+            // (user is signed out or refresh token is invalid); the recording
+            // will drain the next time the user re-authenticates.
+            if let freshCred = try? await account.validWorkspaceCredential() {
+                await sidecar.pushWorkspaceCredential(freshCred)
+            }
         }
     }
 }
@@ -84,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct MenuBarLabel: View {
     let status: RecordingStatus
+    var authState: AuthState = .ok
 
     var body: some View {
         HStack(spacing: 3) {
@@ -98,6 +124,11 @@ struct MenuBarLabel: View {
     }
 
     private var iconName: String {
+        // Show a lock only when idle or meeting-detected — uploading and error
+        // states are more urgent transient signals that should not be masked.
+        if case .needsAuth = authState, status == .idle || status == .meetingDetected {
+            return "lock.circle"
+        }
         switch status {
         case .idle:            return "waveform"
         case .meetingDetected: return "waveform"
@@ -108,6 +139,9 @@ struct MenuBarLabel: View {
     }
 
     private var iconColor: Color {
+        if case .needsAuth = authState, status == .idle || status == .meetingDetected {
+            return .orange
+        }
         switch status {
         case .idle:            return .primary
         case .meetingDetected: return .orange

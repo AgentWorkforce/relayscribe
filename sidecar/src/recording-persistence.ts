@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { RecorderSettings } from './recorder-settings';
 import type { RelayWorkspaceContext } from './relay-workspace';
 
-export type PersistenceStatus = 'pending' | 'transcribed' | 'failed';
+export type PersistenceStatus = 'pending' | 'transcribed' | 'failed' | 'needs-auth';
 
 export interface RecordingEntry {
   id: string;
@@ -126,6 +126,41 @@ export async function markFailed(id: string): Promise<void> {
   console.log(`[persist] failed id=${id} retryCount=${entry.retryCount}`);
 }
 
+// Auth failures park the recording without consuming a retry slot.
+// The entry drains only when a new credential arrives.
+export async function markNeedsAuth(id: string): Promise<void> {
+  const manifest = await readManifest();
+  const entry = manifest.recordings[id];
+  if (!entry) return;
+  entry.status = 'needs-auth';
+  entry.lastAttemptAt = Date.now();
+  // Roll back the retryCount increment from bumpRetryCount, which is always
+  // called before processing begins.  Auth failures must not consume retry
+  // slots — the entry must remain drainable across multiple credential
+  // rotations without eventually hitting MAX_RETRIES and being silently dropped.
+  if (entry.retryCount > 0) entry.retryCount -= 1;
+  manifest.recordings[id] = entry;
+  await writeManifest(manifest);
+  console.log(`[persist] needs-auth id=${id} retryCount=${entry.retryCount} (rolled back auth-bump)`);
+}
+
+// Moves a needs-auth entry back into the failed queue so retryFailedRecordings()
+// picks it up immediately after a credential refresh.
+// Sets status to 'failed' (not 'pending') so getRetryableEntries can find it.
+// retryCount is preserved — auth failures did not consume retry slots.
+export async function markPendingFromNeedsAuth(id: string): Promise<void> {
+  const manifest = await readManifest();
+  const entry = manifest.recordings[id];
+  if (!entry) return;
+  entry.status = 'failed';
+  // Reset lastAttemptAt to make the entry immediately eligible (backoffDelayMs
+  // with the current retryCount will be 0 if retryCount stayed at 0).
+  entry.lastAttemptAt = 0;
+  manifest.recordings[id] = entry;
+  await writeManifest(manifest);
+  console.log(`[persist] failed (drained from needs-auth) id=${id}`);
+}
+
 export async function bumpRetryCount(id: string): Promise<number> {
   const manifest = await readManifest();
   const entry = manifest.recordings[id];
@@ -145,6 +180,8 @@ export async function getRetryableEntries(nowMs?: number): Promise<RecordingEntr
   const orphanIds: string[] = [];
 
   for (const [id, entry] of Object.entries(manifest.recordings)) {
+    // needs-auth entries are excluded from the automatic retry queue —
+    // they drain only when a new credential arrives via drainNeedsAuthRecordings.
     if (entry.status !== 'failed') continue;
     if (entry.retryCount >= MAX_RETRIES) continue;
     if (!existsSync(entry.audioPath)) {
@@ -156,6 +193,28 @@ export async function getRetryableEntries(nowMs?: number): Promise<RecordingEntr
     if (now >= readyAt) {
       results.push(entry);
     }
+  }
+
+  if (orphanIds.length > 0) {
+    for (const id of orphanIds) delete manifest.recordings[id];
+    await writeManifest(manifest);
+  }
+
+  return results;
+}
+
+export async function getNeedsAuthEntries(): Promise<RecordingEntry[]> {
+  const manifest = await readManifest();
+  const results: RecordingEntry[] = [];
+  const orphanIds: string[] = [];
+
+  for (const [id, entry] of Object.entries(manifest.recordings)) {
+    if (entry.status !== 'needs-auth') continue;
+    if (!existsSync(entry.audioPath)) {
+      orphanIds.push(id);
+      continue;
+    }
+    results.push(entry);
   }
 
   if (orphanIds.length > 0) {

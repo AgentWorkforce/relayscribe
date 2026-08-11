@@ -14,6 +14,7 @@ import {
 } from './transcript-store';
 import {
   BrainstormPipelineError,
+  type AuthErrorReason,
   type BrainstormPipelineStore,
   processBrainstormAudio,
   runBrainstormPipelineWithPersistence,
@@ -21,7 +22,10 @@ import {
 import {
   bumpRetryCount,
   getRetryableEntries,
+  getNeedsAuthEntries,
   markFailed,
+  markNeedsAuth,
+  markPendingFromNeedsAuth,
   markTranscribed,
   persistAudio,
   RETRY_INTERVAL_MS,
@@ -41,7 +45,6 @@ import {
 import { createUiRoutes } from './ui-routes';
 import {
   DEFAULT_RECALL_API_URL,
-  DEFAULT_RECORDER_TRANSCRIBE_TOKEN,
   DEFAULT_RELAY_CONNECT_URL,
   DEFAULT_TRANSCRIPTS_INGEST_URL,
   DEFAULT_WORKER_URL,
@@ -102,12 +105,10 @@ let runtimeCredential: RuntimeCredential = {
   apiUrl: (process.env.RELAY_API_URL ?? '').replace(/\/+$/, ''),
 };
 
-// Transcription requires a signed-in Relay credential. DESKTOP_SHARED_TOKEN
-// is a local dev override only — never compiled into release builds.
+// Transcription requires a signed-in Relay credential.
+// Never fall back to a shared secret — the user must sign in.
 function resolveWorkerToken(): string {
-  if (runtimeCredential.accessToken) return runtimeCredential.accessToken;
-  if (process.env.DESKTOP_SHARED_TOKEN) return process.env.DESKTOP_SHARED_TOKEN;
-  return '';
+  return runtimeCredential.accessToken;
 }
 
 let recorderSettings: RecorderSettings = {
@@ -505,6 +506,7 @@ const persistenceStore: BrainstormPipelineStore = {
     }),
   markTranscribed,
   markFailed,
+  markNeedsAuth,
 };
 
 app.post('/brainstorm/upload', async (c) => {
@@ -585,6 +587,16 @@ app.post('/relay/auth-token', async (c) => {
     apiUrl: (body.api_url ?? runtimeCredential.apiUrl).replace(/\/+$/, ''),
   };
   console.log(`[sidecar] relay auth-token updated workspaceId=${runtimeCredential.workspaceId}`);
+  // Drain any needs-auth recordings — credential just refreshed
+  void drainNeedsAuthRecordings();
+  return c.json({ ok: true });
+});
+
+// Called when the user signs out so /auth/state reflects the signed-out state
+// and transcription attempts immediately fail rather than using a stale token.
+app.delete('/relay/auth-token', (c) => {
+  runtimeCredential = { accessToken: '', workspaceId: '', apiUrl: runtimeCredential.apiUrl };
+  console.log('[sidecar] relay auth-token cleared (user signed out)');
   return c.json({ ok: true });
 });
 
@@ -696,17 +708,72 @@ async function retryFailedRecordings(): Promise<void> {
       await markTranscribed(entry.id);
       console.log(`[retry] success id=${entry.id}`);
     } catch (err) {
-      await markFailed(entry.id).catch(() => {});
-      console.error(`[retry] failed id=${entry.id}:`, err instanceof Error ? err.message : err);
+      // missing_token (sidecar started before sign-in) is also an auth failure
+      if (err instanceof BrainstormPipelineError &&
+          (err.code === 'transcribe_auth_failed' || err.code === 'missing_token')) {
+        await markNeedsAuth(entry.id).catch(() => {});
+        console.warn(`[retry] auth failure id=${entry.id} code=${err.code} reason=${err.authReason ?? 'unknown'} — parking needs-auth`);
+      } else {
+        await markFailed(entry.id).catch(() => {});
+        console.error(`[retry] failed id=${entry.id}:`, err instanceof Error ? err.message : err);
+      }
     }
   }
 }
 
+async function drainNeedsAuthRecordings(): Promise<void> {
+  let parked: RecordingEntry[];
+  try {
+    parked = await getNeedsAuthEntries();
+  } catch (err) {
+    console.warn('[drain] could not read needs-auth entries:', err instanceof Error ? err.message : err);
+    return;
+  }
+  if (parked.length === 0) return;
+  // Only drain entries that belong to the current workspace credential.  Entries
+  // for a different workspace stay parked — they'll drain when the matching
+  // credential is presented.  Entries with no relayWorkspaceId are drained
+  // unconditionally (legacy / single-workspace deployments).
+  //
+  // IMPORTANT: do NOT use !currentWorkspaceId as an OR — that would make an
+  // empty/missing workspaceId act as a wildcard and drain recordings from every
+  // workspace.  Instead: untagged legacy entries always drain; tagged entries
+  // only drain when currentWorkspaceId is present and matches exactly.
+  const currentWorkspaceId = runtimeCredential.workspaceId;
+  const todrain = parked.filter(entry =>
+    !entry.relayWorkspaceId ||
+    (Boolean(currentWorkspaceId) && entry.relayWorkspaceId === currentWorkspaceId),
+  );
+  const skipped = parked.length - todrain.length;
+  console.log(`[drain] draining ${todrain.length} needs-auth recording(s) after credential refresh${skipped > 0 ? ` (${skipped} skipped: different workspace)` : ''}`);
+  for (const entry of todrain) {
+    await markPendingFromNeedsAuth(entry.id).catch(() => {});
+  }
+  // Pick them up immediately via the retry queue
+  await retryFailedRecordings();
+}
+
 function startRetryQueue(): void {
-  // Run once on startup to catch recordings that failed in a previous session
-  void retryFailedRecordings();
+  // Run once on startup to catch recordings that failed in a previous session.
+  // After the initial retry batch completes, run drainNeedsAuthRecordings() so
+  // entries that 401'd during startup retry (and transitioned to needs-auth) are
+  // drained immediately if a credential is already available, rather than
+  // waiting until the next POST /relay/auth-token.  Safe if the credential is
+  // expired: markNeedsAuth rolls back the retryCount, and pushWorkspaceCredential
+  // from the Swift app will drain them again with the fresh token.
+  void retryFailedRecordings().then(() => drainNeedsAuthRecordings()).catch(() => {});
   setInterval(() => { void retryFailedRecordings(); }, RETRY_INTERVAL_MS);
 }
+
+// ── Auth state endpoint ───────────────────────────────────────────────────────
+app.get('/auth/state', async (c) => {
+  const parked = await getNeedsAuthEntries().catch(() => [] as RecordingEntry[]);
+  const hasCredential = Boolean(runtimeCredential.accessToken);
+  return c.json({
+    state: hasCredential ? 'ok' : 'needs-auth',
+    parkedRecordings: parked.length,
+  });
+});
 
 // ── Generative UI (Beta) routes ────────────────────────────────────────────────
 // Mount the malleable-UI sub-app at root so the native shell can hit /ui,
@@ -726,5 +793,5 @@ startRetryQueue();
 serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`[sidecar] listening on http://127.0.0.1:${info.port}`);
   if (!WORKER_URL) console.warn('[sidecar] WARNING: WORKER_URL is not set');
-  if (!resolveWorkerToken()) console.warn('[sidecar] WARNING: No auth credential — set RELAY_ACCESS_TOKEN or DESKTOP_SHARED_TOKEN');
+  if (!resolveWorkerToken()) console.warn('[sidecar] WARNING: No auth credential — sign in to Relay in the app settings');
 });

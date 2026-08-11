@@ -274,9 +274,17 @@ final class RelayAccount {
 
     // MARK: - Token validity
 
+    /// Returns a workspace credential whose access token is guaranteed to be
+    /// valid (refreshed if within 120 s of expiry). Throws if signed out or
+    /// if refresh fails (in which case it also signs out).
+    func validWorkspaceCredential() async throws -> WorkspaceCredential {
+        let cred = try await validCredential()
+        return WorkspaceCredential(accessToken: cred.accessToken, workspaceId: cred.workspaceId, apiURL: cred.apiURL)
+    }
+
     /// Returns a credential whose access token is valid, refreshing if it is
     /// within two minutes of expiry. Signs out if the refresh is rejected.
-    private func validCredential() async throws -> Credential {
+    func validCredential() async throws -> Credential {
         guard let current = credential else {
             throw RelayAuthError.message("Not signed in.")
         }

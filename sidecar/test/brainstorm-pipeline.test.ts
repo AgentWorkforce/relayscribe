@@ -7,6 +7,7 @@ import {
   processBrainstormAudio,
   runBrainstormPipelineWithPersistence,
 } from '../src/brainstorm-pipeline';
+import type { AuthErrorReason } from '../src/brainstorm-pipeline';
 import { DEFAULT_SETTINGS } from '../src/recorder-settings';
 
 describe('brainstorm pipeline', () => {
@@ -184,6 +185,73 @@ describe('runBrainstormPipelineWithPersistence', () => {
     assert.equal(store.persisted.length, 1);
     assert.equal(store.failed[0], 'persist-1');
     assert.equal(store.transcribed.length, 0);
+  });
+
+  it('401 from transcription worker throws transcribe_auth_failed with authReason', async () => {
+    const store = makeMockStore();
+    const fetcher: typeof fetch = async () =>
+      new Response(JSON.stringify({ error: 'unauthorized', reason: 'expired' }), { status: 401 });
+
+    await assert.rejects(
+      () => runBrainstormPipelineWithPersistence({ ...baseInput, fetcher }, store),
+      (err: unknown) => {
+        if (!(err instanceof BrainstormPipelineError)) return false;
+        assert.equal(err.code, 'transcribe_auth_failed');
+        assert.equal(err.authReason, 'expired');
+        assert.equal(err.statusCode, 401);
+        return true;
+      },
+    );
+  });
+
+  it('401 parks to needs-auth when store.markNeedsAuth is provided (retryCount unchanged)', async () => {
+    const store = makeMockStore();
+    const needsAuthCalled: string[] = [];
+    store.markNeedsAuth = async (id) => { needsAuthCalled.push(id); };
+
+    const fetcher: typeof fetch = async () =>
+      new Response(JSON.stringify({ error: 'unauthorized', reason: 'revoked' }), { status: 401 });
+
+    await assert.rejects(
+      () => runBrainstormPipelineWithPersistence({ ...baseInput, fetcher }, store),
+      (err: unknown) => err instanceof BrainstormPipelineError && err.code === 'transcribe_auth_failed',
+    );
+
+    assert.equal(store.persisted.length, 1);
+    assert.equal(needsAuthCalled[0], 'persist-1', 'markNeedsAuth called, not markFailed');
+    assert.equal(store.failed.length, 0, 'markFailed must NOT be called on auth failure');
+  });
+
+  it('401 falls back to markFailed when store.markNeedsAuth is not provided', async () => {
+    const store = makeMockStore();
+    // Remove optional markNeedsAuth
+    delete (store as Partial<typeof store>).markNeedsAuth;
+
+    const fetcher: typeof fetch = async () =>
+      new Response(JSON.stringify({ error: 'unauthorized', reason: 'invalid' }), { status: 401 });
+
+    await assert.rejects(
+      () => runBrainstormPipelineWithPersistence({ ...baseInput, fetcher }, store),
+      (err: unknown) => err instanceof BrainstormPipelineError && err.code === 'transcribe_auth_failed',
+    );
+
+    assert.equal(store.failed[0], 'persist-1', 'markFailed called as fallback when markNeedsAuth absent');
+  });
+
+  it('401 with unknown reason defaults to invalid authReason', async () => {
+    const store = makeMockStore();
+    const fetcher: typeof fetch = async () =>
+      new Response(JSON.stringify({ error: 'unauthorized', reason: 'totally-unknown-reason' }), { status: 401 });
+
+    await assert.rejects(
+      () => runBrainstormPipelineWithPersistence({ ...baseInput, fetcher }, store),
+      (err: unknown) => {
+        if (!(err instanceof BrainstormPipelineError)) return false;
+        assert.equal(err.code, 'transcribe_auth_failed');
+        assert.equal(err.authReason as AuthErrorReason, 'invalid', 'unknown reason must normalize to invalid');
+        return true;
+      },
+    );
   });
 
   it('continues without persistence id when persistAudio throws', async () => {

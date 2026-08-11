@@ -36,8 +36,23 @@ final class SidecarManager {
     func setWorkspaceCredential(_ credential: WorkspaceCredential?) {
         workspaceCredential = credential
         if case .running = state {
-            Task { await syncRelayAuthToken() }
+            if credential != nil {
+                Task { await syncRelayAuthToken() }
+            } else {
+                Task { await clearRelayAuthToken() }
+            }
         }
+    }
+
+    /// Push a new credential to the sidecar and **await** the HTTP
+    /// acknowledgement before returning.  Use this when the sidecar must have
+    /// the new token in place before the next request (e.g. pre-upload
+    /// credential refresh).  Unlike `setWorkspaceCredential`, this does not
+    /// fire-and-forget the sync.
+    func pushWorkspaceCredential(_ credential: WorkspaceCredential) async {
+        workspaceCredential = credential
+        guard case .running = state else { return }
+        await syncRelayAuthToken()
     }
 
     func stop() {
@@ -246,6 +261,16 @@ final class SidecarManager {
         var body: [String: String] = ["access_token": cred.accessToken, "workspace_id": cred.workspaceId]
         if let apiURL = cred.apiURL { body["api_url"] = apiURL }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        _ = try? await URLSession.shared.data(for: req)
+    }
+
+    /// Notifies the sidecar that the user has signed out so it clears the
+    /// in-memory credential and `/auth/state` reflects the signed-out state.
+    private func clearRelayAuthToken() async {
+        let url = AppConfiguration.sidecarBaseURL.appendingPathComponent("relay/auth-token")
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.timeoutInterval = 5
         _ = try? await URLSession.shared.data(for: req)
     }
 
