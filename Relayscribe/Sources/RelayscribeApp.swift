@@ -64,8 +64,12 @@ public struct RelayscribeApp: App {
         // Wire credential refresh callbacks so stopBrainstormRecording() always
         // sends a fresh token before uploading (covers 22-hour uptime token expiry).
         store.credentialProvider = { [account] in try await account.validWorkspaceCredential() }
+        // Use pushWorkspaceCredential (not setWorkspaceCredential) so the sidecar
+        // HTTP sync is awaited before the callback returns.  RecordingStore calls
+        // this callback and immediately starts the upload on the next line — the
+        // sidecar must have the new token in place before that request lands.
         store.onCredentialRefreshed = { [sidecar] credential in
-            sidecar.setWorkspaceCredential(credential)
+            await sidecar.pushWorkspaceCredential(credential)
         }
         await sidecar.ensureRunning()
         if case .running = sidecar.state {

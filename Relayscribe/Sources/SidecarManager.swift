@@ -40,6 +40,17 @@ final class SidecarManager {
         }
     }
 
+    /// Push a new credential to the sidecar and **await** the HTTP
+    /// acknowledgement before returning.  Use this when the sidecar must have
+    /// the new token in place before the next request (e.g. pre-upload
+    /// credential refresh).  Unlike `setWorkspaceCredential`, this does not
+    /// fire-and-forget the sync.
+    func pushWorkspaceCredential(_ credential: WorkspaceCredential) async {
+        workspaceCredential = credential
+        guard case .running = state else { return }
+        await syncRelayAuthToken()
+    }
+
     func stop() {
         monitorTask?.cancel()
         monitorTask = nil

@@ -134,11 +134,14 @@ export async function markNeedsAuth(id: string): Promise<void> {
   if (!entry) return;
   entry.status = 'needs-auth';
   entry.lastAttemptAt = Date.now();
-  // Intentionally NOT incrementing retryCount — auth failures must not
-  // consume retries (retryCount is reserved for transient server errors).
+  // Roll back the retryCount increment from bumpRetryCount, which is always
+  // called before processing begins.  Auth failures must not consume retry
+  // slots — the entry must remain drainable across multiple credential
+  // rotations without eventually hitting MAX_RETRIES and being silently dropped.
+  if (entry.retryCount > 0) entry.retryCount -= 1;
   manifest.recordings[id] = entry;
   await writeManifest(manifest);
-  console.log(`[persist] needs-auth id=${id} retryCount=${entry.retryCount} (unchanged)`);
+  console.log(`[persist] needs-auth id=${id} retryCount=${entry.retryCount} (rolled back auth-bump)`);
 }
 
 // Moves a needs-auth entry back into the failed queue so retryFailedRecordings()

@@ -212,6 +212,21 @@ export async function processBrainstormAudio(input: BrainstormPipelineInput): Pr
   });
   const payload = await readResponsePayload(res);
   if (!res.ok) {
+    // Classify ingest 401 the same as a transcription 401: park without burning
+    // a retry.  The ingest endpoint now supports user-token auth, so a 401 is
+    // an auth failure, not a transient server error.
+    if (res.status === 401) {
+      const reason = (typeof payload === 'object' && payload !== null && 'reason' in payload)
+        ? String((payload as Record<string, unknown>).reason)
+        : 'invalid';
+      const authReason: AuthErrorReason = AUTH_ERROR_CODES.includes(reason as AuthErrorReason) ? reason as AuthErrorReason : 'invalid';
+      throw new BrainstormPipelineError(
+        `transcripts ingest 401: ${authReason}`,
+        401,
+        'transcribe_auth_failed',
+        authReason,
+      );
+    }
     const detail = typeof payload === 'string' ? payload : JSON.stringify(payload);
     throw new BrainstormPipelineError(`transcripts ingest ${res.status}: ${detail}`, 502, 'ingest_failed');
   }
