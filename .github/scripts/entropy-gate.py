@@ -26,14 +26,6 @@ def _line_col(content: str, pos: int):
     return line, col
 
 
-def _excerpt(match_text: str, max_len: int = 32) -> str:
-    """Return a safely truncated, non-printable-redacted excerpt."""
-    s = match_text[:max_len]
-    if len(match_text) > max_len:
-        s += '…'
-    return s
-
-
 def main() -> int:
     if len(sys.argv) < 2:
         sys.stderr.write("usage: entropy-gate.py <path>\n")
@@ -51,8 +43,8 @@ def main() -> int:
         line, col = _line_col(content, m.start())
         sys.stderr.write(
             f"ENTROPY GATE FAILED: 64-char hex string at {path}:{line}:{col}\n"
-            f"  matched: {_excerpt(m.group())}\n"
-            f"  (may be a SHA-256 digest — inspect manually and add an allowlist entry if benign)\n"
+            f"  (may be a SHA-256 digest — if the bundle legitimately contains this value,\n"
+            f"  remove it from the distributed artifact; never add credentials to the bundle)\n"
         )
         return 1
 
@@ -61,7 +53,6 @@ def main() -> int:
         line, col = _line_col(content, m.start())
         sys.stderr.write(
             f"ENTROPY GATE FAILED: Relay token pattern at {path}:{line}:{col}\n"
-            f"  matched: {_excerpt(m.group())}\n"
         )
         return 1
 
