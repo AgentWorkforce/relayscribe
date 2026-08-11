@@ -7,6 +7,9 @@ import {
   persistAudio,
   markTranscribed,
   markFailed,
+  markNeedsAuth,
+  markPendingFromNeedsAuth,
+  getNeedsAuthEntries,
   bumpRetryCount,
   getRetryableEntries,
   backoffDelayMs,
@@ -125,5 +128,57 @@ describe('recording-persistence', () => {
 
     const retryable = await getRetryableEntries(Date.now() + 60_000);
     assert.ok(!retryable.some((e) => e.id === entry.id), 'orphaned entry skipped');
+  });
+
+  it('markNeedsAuth sets status to needs-auth without incrementing retryCount', async () => {
+    const audio = new Uint8Array([20, 21]);
+    const entry = await persistAudio(audio, { contentType: 'audio/mp4' });
+    const originalRetryCount = entry.retryCount;
+
+    await markNeedsAuth(entry.id);
+
+    // Should NOT appear in the normal retry queue
+    const retryable = await getRetryableEntries(Date.now() + 60_000);
+    assert.ok(!retryable.some((e) => e.id === entry.id), 'needs-auth entry excluded from retry queue');
+
+    // Should appear in the needs-auth queue
+    const parked = await getNeedsAuthEntries();
+    const found = parked.find((e) => e.id === entry.id);
+    assert.ok(found, 'entry appears in needs-auth list');
+    assert.equal(found!.status, 'needs-auth');
+    assert.equal(found!.retryCount, originalRetryCount, 'retryCount must not be incremented on auth failure');
+  });
+
+  it('getNeedsAuthEntries returns only needs-auth entries with audio present', async () => {
+    const audio1 = new Uint8Array([30]);
+    const entry1 = await persistAudio(audio1, { contentType: 'audio/mp4' });
+    await markNeedsAuth(entry1.id);
+
+    const audio2 = new Uint8Array([31]);
+    const entry2 = await persistAudio(audio2, { contentType: 'audio/mp4' });
+    await markFailed(entry2.id); // not needs-auth
+
+    const parked = await getNeedsAuthEntries();
+    assert.ok(parked.some((e) => e.id === entry1.id), 'needs-auth entry included');
+    assert.ok(!parked.some((e) => e.id === entry2.id), 'failed entry excluded from needs-auth list');
+  });
+
+  it('markPendingFromNeedsAuth drains entry into failed queue so retryFailedRecordings picks it up', async () => {
+    const audio = new Uint8Array([40, 41]);
+    const entry = await persistAudio(audio, { contentType: 'audio/mp4' });
+    await markNeedsAuth(entry.id);
+
+    await markPendingFromNeedsAuth(entry.id);
+
+    // After draining, it should no longer appear in needs-auth
+    const parked = await getNeedsAuthEntries();
+    assert.ok(!parked.some((e) => e.id === entry.id), 'entry not in needs-auth after markPendingFromNeedsAuth');
+
+    // retryCount=0 means backoff=0 → should be retryable immediately as 'failed'
+    const retryable = await getRetryableEntries(Date.now());
+    const found = retryable.find((e) => e.id === entry.id);
+    assert.ok(found, 'entry appears in retryable queue after markPendingFromNeedsAuth');
+    assert.equal(found!.status, 'failed');
+    assert.equal(found!.retryCount, 0, 'retryCount remains 0 — auth failure did not consume a retry slot');
   });
 });

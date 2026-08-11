@@ -11,6 +11,11 @@ enum RecordingStatus: String, Codable, Equatable {
     case error             = "error"
 }
 
+enum AuthState: Equatable {
+    case ok
+    case needsAuth(parkedCount: Int)
+}
+
 enum BrainstormRecordingStatus: Equatable {
     case idle
     case starting
@@ -45,6 +50,12 @@ final class RecordingStore {
     var brainstormStatus: BrainstormRecordingStatus = .idle
     var brainstormStartedAt: Date?
     var brainstormTranscript: String?
+    var authState: AuthState = .ok
+
+    /// Called before upload to get a fresh credential. Set by the app at startup.
+    var credentialProvider: (() async throws -> WorkspaceCredential)?
+    /// Called after credential refresh so the sidecar is kept in sync.
+    var onCredentialRefreshed: ((WorkspaceCredential) async -> Void)?
 
     private var pollTask: Task<Void, Never>?
     private let brainstormRecorder = BrainstormAudioRecorder()
@@ -127,6 +138,11 @@ final class RecordingStore {
         Task {
             do {
                 defer { try? FileManager.default.removeItem(at: fileURL) }
+                // Refresh credential before transcription (covers the 22-hour uptime case)
+                if let provider = credentialProvider {
+                    let fresh = try await provider()
+                    await onCredentialRefreshed?(fresh)
+                }
                 let response = try await uploadBrainstormAudio(fileURL: fileURL)
                 brainstormTranscript = response.transcript
                 brainstormStartedAt = nil
@@ -164,6 +180,24 @@ final class RecordingStore {
             self.sidecarAvailable = true
         } catch {
             self.sidecarAvailable = false
+        }
+        await fetchAuthState()
+    }
+
+    private func fetchAuthState() async {
+        let url = AppConfiguration.sidecarBaseURL.appendingPathComponent("auth/state")
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        struct AuthStateResponse: Decodable {
+            var state: String
+            var parkedRecordings: Int
+        }
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let decoded = try? JSONDecoder().decode(AuthStateResponse.self, from: data) else { return }
+        if decoded.state == "needs-auth" || decoded.parkedRecordings > 0 {
+            authState = .needsAuth(parkedCount: decoded.parkedRecordings)
+        } else {
+            authState = .ok
         }
     }
 

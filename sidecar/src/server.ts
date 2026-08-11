@@ -14,6 +14,7 @@ import {
 } from './transcript-store';
 import {
   BrainstormPipelineError,
+  type AuthErrorReason,
   type BrainstormPipelineStore,
   processBrainstormAudio,
   runBrainstormPipelineWithPersistence,
@@ -21,7 +22,10 @@ import {
 import {
   bumpRetryCount,
   getRetryableEntries,
+  getNeedsAuthEntries,
   markFailed,
+  markNeedsAuth,
+  markPendingFromNeedsAuth,
   markTranscribed,
   persistAudio,
   RETRY_INTERVAL_MS,
@@ -41,7 +45,6 @@ import {
 import { createUiRoutes } from './ui-routes';
 import {
   DEFAULT_RECALL_API_URL,
-  DEFAULT_RECORDER_TRANSCRIBE_TOKEN,
   DEFAULT_RELAY_CONNECT_URL,
   DEFAULT_TRANSCRIPTS_INGEST_URL,
   DEFAULT_WORKER_URL,
@@ -102,12 +105,10 @@ let runtimeCredential: RuntimeCredential = {
   apiUrl: (process.env.RELAY_API_URL ?? '').replace(/\/+$/, ''),
 };
 
-// Transcription requires a signed-in Relay credential. DESKTOP_SHARED_TOKEN
-// is a local dev override only — never compiled into release builds.
+// Transcription requires a signed-in Relay credential.
+// Never fall back to a shared secret — the user must sign in.
 function resolveWorkerToken(): string {
-  if (runtimeCredential.accessToken) return runtimeCredential.accessToken;
-  if (process.env.DESKTOP_SHARED_TOKEN) return process.env.DESKTOP_SHARED_TOKEN;
-  return '';
+  return runtimeCredential.accessToken;
 }
 
 let recorderSettings: RecorderSettings = {
@@ -505,6 +506,7 @@ const persistenceStore: BrainstormPipelineStore = {
     }),
   markTranscribed,
   markFailed,
+  markNeedsAuth,
 };
 
 app.post('/brainstorm/upload', async (c) => {
@@ -585,6 +587,8 @@ app.post('/relay/auth-token', async (c) => {
     apiUrl: (body.api_url ?? runtimeCredential.apiUrl).replace(/\/+$/, ''),
   };
   console.log(`[sidecar] relay auth-token updated workspaceId=${runtimeCredential.workspaceId}`);
+  // Drain any needs-auth recordings — credential just refreshed
+  void drainNeedsAuthRecordings();
   return c.json({ ok: true });
 });
 
@@ -696,10 +700,32 @@ async function retryFailedRecordings(): Promise<void> {
       await markTranscribed(entry.id);
       console.log(`[retry] success id=${entry.id}`);
     } catch (err) {
-      await markFailed(entry.id).catch(() => {});
-      console.error(`[retry] failed id=${entry.id}:`, err instanceof Error ? err.message : err);
+      if (err instanceof BrainstormPipelineError && err.code === 'transcribe_auth_failed') {
+        await markNeedsAuth(entry.id).catch(() => {});
+        console.warn(`[retry] auth failure id=${entry.id} reason=${err.authReason ?? 'unknown'} — parking needs-auth`);
+      } else {
+        await markFailed(entry.id).catch(() => {});
+        console.error(`[retry] failed id=${entry.id}:`, err instanceof Error ? err.message : err);
+      }
     }
   }
+}
+
+async function drainNeedsAuthRecordings(): Promise<void> {
+  let parked: RecordingEntry[];
+  try {
+    parked = await getNeedsAuthEntries();
+  } catch (err) {
+    console.warn('[drain] could not read needs-auth entries:', err instanceof Error ? err.message : err);
+    return;
+  }
+  if (parked.length === 0) return;
+  console.log(`[drain] draining ${parked.length} needs-auth recording(s) after credential refresh`);
+  for (const entry of parked) {
+    await markPendingFromNeedsAuth(entry.id).catch(() => {});
+  }
+  // Pick them up immediately via the retry queue
+  await retryFailedRecordings();
 }
 
 function startRetryQueue(): void {
@@ -707,6 +733,16 @@ function startRetryQueue(): void {
   void retryFailedRecordings();
   setInterval(() => { void retryFailedRecordings(); }, RETRY_INTERVAL_MS);
 }
+
+// ── Auth state endpoint ───────────────────────────────────────────────────────
+app.get('/auth/state', async (c) => {
+  const parked = await getNeedsAuthEntries().catch(() => [] as RecordingEntry[]);
+  const hasCredential = Boolean(runtimeCredential.accessToken);
+  return c.json({
+    state: hasCredential ? 'ok' : 'needs-auth',
+    parkedRecordings: parked.length,
+  });
+});
 
 // ── Generative UI (Beta) routes ────────────────────────────────────────────────
 // Mount the malleable-UI sub-app at root so the native shell can hit /ui,
@@ -726,5 +762,5 @@ startRetryQueue();
 serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`[sidecar] listening on http://127.0.0.1:${info.port}`);
   if (!WORKER_URL) console.warn('[sidecar] WARNING: WORKER_URL is not set');
-  if (!resolveWorkerToken()) console.warn('[sidecar] WARNING: No auth credential — set RELAY_ACCESS_TOKEN or DESKTOP_SHARED_TOKEN');
+  if (!resolveWorkerToken()) console.warn('[sidecar] WARNING: No auth credential — sign in to Relay in the app settings');
 });

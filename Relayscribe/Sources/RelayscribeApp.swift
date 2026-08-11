@@ -27,7 +27,7 @@ public struct RelayscribeApp: App {
         } label: {
             // The label is always rendered (the menu-bar icon), so this runs at
             // launch — start the sidecar here, not on the lazy .window content.
-            MenuBarLabel(status: store.effectiveMenuStatus(mode: settings.mode))
+            MenuBarLabel(status: store.effectiveMenuStatus(mode: settings.mode), authState: store.authState)
                 .task(id: "startup", priority: .userInitiated) {
                     await startSidecar()
                 }
@@ -61,6 +61,12 @@ public struct RelayscribeApp: App {
     private func startSidecar() async {
         sidecar.setWorkspaceCredential(account.workspaceCredential)
         sidecar.setRelayWorkspaceId(account.credential?.workspaceId)
+        // Wire credential refresh callbacks so stopBrainstormRecording() always
+        // sends a fresh token before uploading (covers 22-hour uptime token expiry).
+        store.credentialProvider = { [account] in try await account.validWorkspaceCredential() }
+        store.onCredentialRefreshed = { [sidecar] credential in
+            sidecar.setWorkspaceCredential(credential)
+        }
         await sidecar.ensureRunning()
         if case .running = sidecar.state {
             store.onSidecarReady(settings: settings)
@@ -84,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct MenuBarLabel: View {
     let status: RecordingStatus
+    var authState: AuthState = .ok
 
     var body: some View {
         HStack(spacing: 3) {
@@ -98,6 +105,11 @@ struct MenuBarLabel: View {
     }
 
     private var iconName: String {
+        // Show a lock when recordings are parked waiting for a credential,
+        // but only when not actively recording.
+        if case .needsAuth = authState, status != .recording {
+            return "lock.circle"
+        }
         switch status {
         case .idle:            return "waveform"
         case .meetingDetected: return "waveform"
@@ -108,6 +120,9 @@ struct MenuBarLabel: View {
     }
 
     private var iconColor: Color {
+        if case .needsAuth = authState, status != .recording {
+            return .orange
+        }
         switch status {
         case .idle:            return .primary
         case .meetingDetected: return .orange

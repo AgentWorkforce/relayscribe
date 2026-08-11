@@ -13,16 +13,22 @@ export interface BrainstormPipelineStore {
   ): Promise<{ id: string }>;
   markTranscribed(id: string): Promise<void>;
   markFailed(id: string): Promise<void>;
+  /** Optional: called instead of markFailed when the error is a 401 auth failure. */
+  markNeedsAuth?: (id: string) => Promise<void>;
 }
 
 export const DEFAULT_TRANSCRIPTS_INGEST_URL = 'https://agentrelay.com/cloud/api/v1/webhooks/transcripts';
 export const RELAYSCRIBE_VERSION = '1.3.0';
+
+export const AUTH_ERROR_CODES = ['expired', 'revoked', 'insufficient_scope', 'invalid'] as const;
+export type AuthErrorReason = (typeof AUTH_ERROR_CODES)[number];
 
 export class BrainstormPipelineError extends Error {
   constructor(
     message: string,
     readonly statusCode: number,
     readonly code: string,
+    readonly authReason?: AuthErrorReason,
   ) {
     super(message);
     this.name = 'BrainstormPipelineError';
@@ -104,6 +110,18 @@ async function transcribeAudio(input: BrainstormPipelineInput): Promise<string> 
   });
   const payload = await readResponsePayload(res);
   if (!res.ok) {
+    if (res.status === 401) {
+      const reason = (typeof payload === 'object' && payload !== null && 'reason' in payload)
+        ? String((payload as Record<string, unknown>).reason)
+        : 'invalid';
+      const authReason: AuthErrorReason = AUTH_ERROR_CODES.includes(reason as AuthErrorReason) ? reason as AuthErrorReason : 'invalid';
+      throw new BrainstormPipelineError(
+        `transcribe 401: ${authReason}`,
+        401,
+        'transcribe_auth_failed',
+        authReason,
+      );
+    }
     const detail = typeof payload === 'string' ? payload : JSON.stringify(payload);
     throw new BrainstormPipelineError(`transcribe ${res.status}: ${detail}`, 502, 'transcribe_failed');
   }
@@ -227,9 +245,16 @@ export async function runBrainstormPipelineWithPersistence(
     return result;
   } catch (err) {
     if (persistenceId) {
-      await store.markFailed(persistenceId).catch((e: unknown) => {
-        console.warn('[pipeline] markFailed failed:', e instanceof Error ? e.message : e);
-      });
+      const isAuthError = err instanceof BrainstormPipelineError && err.code === 'transcribe_auth_failed';
+      if (isAuthError && store.markNeedsAuth) {
+        await store.markNeedsAuth(persistenceId).catch((e: unknown) => {
+          console.warn('[pipeline] markNeedsAuth failed:', e instanceof Error ? e.message : e);
+        });
+      } else {
+        await store.markFailed(persistenceId).catch((e: unknown) => {
+          console.warn('[pipeline] markFailed failed:', e instanceof Error ? e.message : e);
+        });
+      }
     }
     throw err;
   }

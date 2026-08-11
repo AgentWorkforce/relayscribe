@@ -76,6 +76,13 @@ async function main() {
   const configRes = await app.request('/config');
   assert.equal(configRes.status, 200);
   assert.equal((await readJson(configRes) as { port?: number }).port, 3700);
+
+  // GET /auth/state — returns state and parkedRecordings count
+  const authStateRes = await app.request('/auth/state');
+  assert.equal(authStateRes.status, 200);
+  const authStateBody = await readJson(authStateRes) as { state: string; parkedRecordings: number };
+  assert.ok(authStateBody.state === 'ok' || authStateBody.state === 'needs-auth', 'state must be ok or needs-auth');
+  assert.ok(typeof authStateBody.parkedRecordings === 'number', 'parkedRecordings must be a number');
 }
 
 main()
