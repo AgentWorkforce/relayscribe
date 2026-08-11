@@ -79,8 +79,15 @@ public struct RelayscribeApp: App {
             // syncRelayAuthToken never fired (sidecar wasn't up yet).  Pushing
             // here ensures needs-auth recordings parked in a prior session are
             // drained immediately on relaunch when the user is already signed in.
-            if let cred = account.workspaceCredential {
-                await sidecar.pushWorkspaceCredential(cred)
+            //
+            // Use validWorkspaceCredential() (not the raw stored credential) so
+            // the drain fires with a fresh access token — on a ~22h relaunch the
+            // stored token may be expired and would immediately re-park every
+            // recording it drains.  Skip the startup drain if refresh fails
+            // (user is signed out or refresh token is invalid); the recording
+            // will drain the next time the user re-authenticates.
+            if let freshCred = try? await account.validWorkspaceCredential() {
+                await sidecar.pushWorkspaceCredential(freshCred)
             }
         }
     }

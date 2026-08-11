@@ -732,11 +732,15 @@ async function drainNeedsAuthRecordings(): Promise<void> {
   // for a different workspace stay parked — they'll drain when the matching
   // credential is presented.  Entries with no relayWorkspaceId are drained
   // unconditionally (legacy / single-workspace deployments).
+  //
+  // IMPORTANT: do NOT use !currentWorkspaceId as an OR — that would make an
+  // empty/missing workspaceId act as a wildcard and drain recordings from every
+  // workspace.  Instead: untagged legacy entries always drain; tagged entries
+  // only drain when currentWorkspaceId is present and matches exactly.
   const currentWorkspaceId = runtimeCredential.workspaceId;
   const todrain = parked.filter(entry =>
     !entry.relayWorkspaceId ||
-    !currentWorkspaceId ||
-    entry.relayWorkspaceId === currentWorkspaceId,
+    (Boolean(currentWorkspaceId) && entry.relayWorkspaceId === currentWorkspaceId),
   );
   const skipped = parked.length - todrain.length;
   console.log(`[drain] draining ${todrain.length} needs-auth recording(s) after credential refresh${skipped > 0 ? ` (${skipped} skipped: different workspace)` : ''}`);
