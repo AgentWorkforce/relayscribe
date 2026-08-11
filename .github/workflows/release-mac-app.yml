@@ -460,12 +460,20 @@ jobs:
           test -f "${APP_BUNDLE_PATH}/Contents/_CodeSignature/CodeResources"
           spctl -a -vvv --type exec "${APP_BUNDLE_PATH}"
 
+      # Gatekeeper acceptance is already asserted by `spctl -a --type exec` in the
+      # previous step. What this one adds is the launch itself: a quarantined app
+      # can be run from a randomized read-only path (App Translocation), which is
+      # exactly the condition that breaks a bundled sidecar resolved by relative
+      # path. So the quarantine flag stays — but applied the way a real download
+      # applies it.
       - name: Verify quarantined app launches sidecar
+        timeout-minutes: 6
         run: |
           set -euo pipefail
 
           cleanup() {
-            osascript -e "quit app \"${APP_NAME}\"" >/dev/null 2>&1 || true
+            # `osascript -e 'quit app ...'` waits for the app to answer, and an app
+            # stuck behind a launch dialog never does. pkill is unconditional.
             pkill -x "${APP_EXECUTABLE}" >/dev/null 2>&1 || true
             pkill -x "sidecar-node" >/dev/null 2>&1 || true
             xattr -dr com.apple.quarantine "${APP_BUNDLE_PATH}" >/dev/null 2>&1 || true
@@ -473,11 +481,33 @@ jobs:
           trap cleanup EXIT
           cleanup
 
+          # Quarantine the BUNDLE ROOT ONLY. Stamping the attribute onto every
+          # nested file (`find ... -exec xattr -w`) is not what a download does,
+          # and it defeats the stapled notarization ticket: each item gets
+          # assessed individually instead of the bundle being admitted once.
+          # That is what made `open` block here for 86 minutes until the job
+          # timeout killed it (run 31481582128).
           QUARANTINE_VALUE="0081;$(printf '%x' "$(date +%s)");GitHubActions;CI"
-          find "${APP_BUNDLE_PATH}" -exec xattr -w com.apple.quarantine "${QUARANTINE_VALUE}" {} +
-          xattr -p com.apple.quarantine "${APP_BUNDLE_PATH}/Contents/MacOS/sidecar-node"
+          xattr -w com.apple.quarantine "${QUARANTINE_VALUE}" "${APP_BUNDLE_PATH}"
+          xattr -p com.apple.quarantine "${APP_BUNDLE_PATH}"
 
-          open "${APP_BUNDLE_PATH}"
+          # Bounded launch. `timeout(1)` is GNU coreutils and stock macOS does not
+          # ship it, so the bound is shell-native rather than depending on a
+          # binary that may not be on the runner. `-g` keeps the app from
+          # stealing focus on the runner's GUI session.
+          open -g "${APP_BUNDLE_PATH}" &
+          open_pid=$!
+          waited=0
+          while kill -0 "$open_pid" 2>/dev/null; do
+            if [ "$waited" -ge 60 ]; then
+              kill -9 "$open_pid" 2>/dev/null || true
+              echo "::error::open(1) did not return within 60s - the launch stalled, most likely on a Gatekeeper assessment with nobody to answer it" >&2
+              exit 1
+            fi
+            sleep 1
+            waited=$((waited + 1))
+          done
+          wait "$open_pid" || { echo "::error::open(1) reported a launch failure" >&2; exit 1; }
 
           for _ in $(seq 1 45); do
             if curl --fail --silent --show-error --max-time 2 \
@@ -489,8 +519,11 @@ jobs:
             sleep 1
           done
 
-          echo "Quarantined app did not launch sidecar on :3700" >&2
+          echo "::error::Quarantined app did not launch sidecar on :3700 within 45s" >&2
           pgrep -lf 'Relayscribe|sidecar-node|node .*server.js' || true
+          # Translocation is the most likely cause if the app is running but the
+          # sidecar is not; the randomized path shows up here.
+          ps -Ao command | grep -i 'AppTranslocation\|Relayscribe' | grep -v grep || true
           exit 1
 
       - name: Create DMG
