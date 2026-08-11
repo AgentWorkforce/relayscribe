@@ -592,6 +592,14 @@ app.post('/relay/auth-token', async (c) => {
   return c.json({ ok: true });
 });
 
+// Called when the user signs out so /auth/state reflects the signed-out state
+// and transcription attempts immediately fail rather than using a stale token.
+app.delete('/relay/auth-token', (c) => {
+  runtimeCredential = { accessToken: '', workspaceId: '', apiUrl: runtimeCredential.apiUrl };
+  console.log('[sidecar] relay auth-token cleared (user signed out)');
+  return c.json({ ok: true });
+});
+
 app.post('/integrations/:provider/connect', async (c) => {
   try {
     const result = await requestHostedIntegrationConnect(c.req.param('provider'));

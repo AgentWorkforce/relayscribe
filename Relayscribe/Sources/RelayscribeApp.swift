@@ -117,9 +117,9 @@ struct MenuBarLabel: View {
     }
 
     private var iconName: String {
-        // Show a lock when recordings are parked waiting for a credential,
-        // but only when not actively recording.
-        if case .needsAuth = authState, status != .recording {
+        // Show a lock only when idle or meeting-detected — uploading and error
+        // states are more urgent transient signals that should not be masked.
+        if case .needsAuth = authState, status == .idle || status == .meetingDetected {
             return "lock.circle"
         }
         switch status {
@@ -132,7 +132,7 @@ struct MenuBarLabel: View {
     }
 
     private var iconColor: Color {
-        if case .needsAuth = authState, status != .recording {
+        if case .needsAuth = authState, status == .idle || status == .meetingDetected {
             return .orange
         }
         switch status {
